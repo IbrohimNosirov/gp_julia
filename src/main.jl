@@ -1,37 +1,71 @@
-# main.jl
-include("base.jl")
-include("inference.jl")
-include("plot.jl")
+using Plots
+include("zero_mean_gp.jl")
 
-function main()
-    println("Running Gaussian Process Inference")
+function branin(x)
+    a = 1.0
+    b = 5.1 / (4π^2)
+    c = 5.0 / π
+    r = 6.0
+    s = 10.0
+    t = 1.0 / (8π)
     
-    # Generate or load data
-    X, y = generate_synthetic_data(30, 0.1)
-    
-    # Split into training and testing sets
-    X_train, y_train, X_test, y_test = split_data(X, y, 0.8)
-    
-    # Create a denser test set for smooth predictions
-    X_dense = range(0, 2π, length=100)
-    
-    # Perform GP inference
-    l = 0.5  # length scale hyperparameter
-    sigma = 1.0  # signal variance hyperparameter
-    noise_var = 0.1  # noise variance
-    
-    println("Training GP model...")
-    y_pred, y_std = predict_with_uncertainty(X_train, y_train, X_dense, rbf_kernel, noise_var, l, sigma)
-    
-    # Plot results
-    println("Creating plot...")
-    p = plot_gp_results(X_train, y_train, X_dense, y_pred, y_std, true_func=sin)
-    
-    # Save plot
-    save_gp_plot(p, "gp_inference_result.png")
-    
-    println("Done! Check 'gp_inference_result.png' for the plot.")
+    return a * (x[2] - b * x[1]^2 + c * x[1] - r)^2 + s * (1 - t) * cos(x[1]) + s
 end
 
-# Run the main function
-main()
+function plot_bo_results(gp, X_all, x_best)
+    x1_range = range(-5, 10, length=100)
+    x2_range = range(0, 15, length=100)
+    
+    z = zeros(length(x2_range), length(x1_range))
+    for (i, x1) in enumerate(x1_range)
+        for (j, x2) in enumerate(x2_range)
+            z[j, i] = branin([x1, x2])
+        end
+    end
+    
+    # Create GP prediction grid
+    X_pred = zeros(2, length(x1_range) * length(x2_range))
+    idx = 1
+    for (i, x1) in enumerate(x1_range)
+        for (j, x2) in enumerate(x2_range)
+            X_pred[:, idx] = [x1, x2]
+            idx += 1
+        end
+    end
+    
+    means, vars = predict(gp, X_pred)
+    mean_grid = reshape(means, (length(x2_range), length(x1_range)))
+    
+    # Create single plot with true function contours and GP fit
+    p = contour(x1_range, x2_range, z, levels=20, color=:viridis, alpha=0.7,
+              xlabel="x₁", ylabel="x₂", title="Branin Function with GP Fit")
+    
+    # Add sampled points
+    scatter!(p, [X_all[1, i] for i in 1:size(X_all, 2)], 
+              [X_all[2, i] for i in 1:size(X_all, 2)], 
+              color=:white, markersize=5, label="Samples")
+    
+    # Add best point
+    scatter!(p, [x_best[1]], [x_best[2]], color=:red, markersize=8, 
+            markershape=:star5, label="Best Solution")
+    
+    # Add GP contours
+    contour!(p, x1_range, x2_range, mean_grid, levels=10, 
+            linestyle=:dash, linewidth=2, color=:orange, alpha=0.8,
+            label="GP Mean")
+    
+    return p
+end
+
+function run_and_save_plot()
+    bounds = [[-5.0, 10.0] [0.0, 15.0]]
+    x_best, f_best, history, gp = BO_loop(branin, bounds, 50, n_init=20)
+    p = plot_bo_results(gp, gp.X, x_best)
+    savefig(p, "zero_mean_gp.svg")
+    println("Plot saved as 'zero_mean_gp.svg'")
+    
+    return p
+end
+
+# Run the function to generate and save the plot
+run_and_save_plot()
