@@ -46,6 +46,16 @@ function rbf_kernel(x1::Vector{Float64}, x2::Vector{Float64}, lengthscale, varia
     return variance*exp(-0.5*sum((x1 .- x2).^2)/(lengthscale^2))
 end
 
+function grad_kernel_matrix(gp::GP, x::Vector{Float64})
+    n1 = size(gp.X)
+    k = zeros(n1)
+    for i in 1:n1
+        k[i] = -2 * rbf_kernel(gp.X[:, i], x, gp.lengthscale, gp.variance)*(X[:, i] - x)
+        k[i] /= gp.lengthscale^2
+    end
+    return k
+end
+
 function predict(gp::GP, x_new::Matrix{Float64})
     K_inv = gp.L' \ (gp.L \ gp.y)
     K21 = compute_kernel_matrix(x_new, gp.X, gp.kernel, gp.lengthscale, gp.variance)
@@ -58,35 +68,49 @@ function predict(gp::GP, x_new::Matrix{Float64})
 end
 
 # need to compute derivative of this or either log EI.
-function EI(mean::Float64, std::Float64, f_best::Float64)
+function EI(gp::GP, x::Matrix{Float64}, f_best::Float64)
+    mean, var = predict(gp, x)
     z = (f_best - mean) / std
     cdf_z = cdf(Normal(), z)
     pdf_z = pdf(Normal(), z)
-    
     return (f_best - mean)*cdf_z + std*pdf_z
 end
 
-function acquire_next_point(gp::GP, bounds::Matrix{Float64}, f_best::Float64;
-                            n_samples::Int=1000)
-    dimensions = size(bounds, 1)
-    
-    # Generate random samples within the bounds
-    X_samples = zeros(dimensions, n_samples)
-    for d in 1:dimensions
-        X_samples[d, :] = bounds[1, d] .+ (bounds[2, d] - bounds[1, d])*rand(n_samples)
+# HUGE DISCLAIMER: NEED TO TEST THOROUGHLY
+function compute_grad_log_EI(gp::GP, x::Matrix{Float64}, f_best)
+    mean, var = predict(gp, x)
+    z = (f_best - mean) / std
+    cdf_z = cdf(Normal(), z)
+    pdf_z = pdf(Normal(), z)
+    EI = (f_best - mean)*cdf + std*pdf
+    grad_x_k, k = grad_kernel_matrix(gp, x)
+    grad_mu = grad_x_k * L' \ (L \ y)
+    grad_sigma = -2 * grad_x_k' * (L \ k)
+
+    return (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI
+end
+
+function backtracking_line_search(gp::GP, x_current::Matrix{Float64})
+    alpha = 1
+    rho = 0.9
+    c = 0.9
+    p = -grad_log_EI/norm(grad_log_EI)
+    lhs, _ = predict(gp, x_k + alpha*p)
+    rhs, _ = predict(gp, x_k)
+    rhs += c*alpha*grad_log_EI * p
+    while lhs > rhs
+        lhs, _ = predict(gp, x_k + alpha*p)
+        rhs, _ = predict(gp, x_k)
+        rhs += c*alpha*grad_log_EI * p
+        alpha = rho * alpha
     end
-    
-    # Predict with the GP
-    means, vars, _ = predict(gp, X_samples)
-    stds = sqrt.(vars)
-    
-    #TODO: replace with gradient-based search using gradient of EI
-    # Calculate EI for each sample
-    ei_values = [EI(means[i], stds[i], f_best) for i in 1:n_samples]
-    
-    # Find the point with maximum EI
-    best_idx = argmax(ei_values)
-    return X_samples[:, best_idx], ei_values[best_idx]
+    return alpha
+end
+
+function acquire_next_point(x_current::Matrix{Float64})
+    grad_log_EI = compute_grad_log_EI(x_current)
+    step_size = backtracking_line_search(x_current)
+    x_next = x_current - step_size*grad_log_EI
 end
 
 function update!(gp::GP, x::Vector{Float64}, y::Float64)
