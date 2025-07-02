@@ -16,7 +16,7 @@ struct GP
 
     function GP(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
     lengthscale::Float64, variance::Float64)
-        K = compute_kernel_matrix(X, X, kernel, lengthscale, variance)
+        K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
         L = cholesky(K).L
         return new(X, y, kernel, L, lengthscale, variance)
     end
@@ -27,7 +27,18 @@ struct GP
     end
 end
 
-function compute_kernel_matrix(X1::Matrix{Float64}, X2::Matrix{Float64},
+function predict(gp::GP, x_new::VecOrMat{Float64})
+    K_inv = gp.L' \ (gp.L \ gp.y)
+    K21 = kernel_matrix_compute(x_new, gp.X, gp.kernel, gp.lengthscale, gp.variance)
+    K22 = kernel_matrix_compute(x_new, x_new, gp.kernel, gp.lengthscale, gp.variance)
+    mu = K21 * K_inv
+    v = gp.L \ K21'
+    sigma2 = K22 - v' * v
+
+    return mu, diag(sigma2)
+end
+
+function kernel_matrix_compute(X1::VecOrMat{Float64}, X2::VecOrMat{Float64},
 kernel::Function, lengthscale::Float64, variance::Float64)
     n1 = size(X1, 2)
     n2 = size(X2, 2)
@@ -42,52 +53,50 @@ kernel::Function, lengthscale::Float64, variance::Float64)
     return K
 end
 
-function rbf_kernel(x1::Vector{Float64}, x2::Vector{Float64}, lengthscale, variance)
+# HUGE DISCLAIMER: NEED TO TEST THOROUGHLY
+function grad_log_EI_compute(gp::GP, x::Vector{Float64}, y_best::Float64)
+    mean, var = predict(gp, x)
+    std = 0
+    if var[1] > 1e-14
+        std = sqrt(var[1])
+        z = (y_best - mean[1]) / std
+    else
+        z = 0
+    end
+    cdf_z = cdf(Normal(), z)
+    pdf_z = pdf(Normal(), z)
+    EI = (y_best - mean[1])*cdf_z + std*pdf_z
+    grad_x_k, k = grad_kernel_matrix_compute(gp, x)
+    grad_mu = grad_x_k' * gp.L' \ (gp.L \ gp.y)
+    grad_sigma = -2 * grad_x_k' * (gp.L \ k)
+
+    return (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI
+end
+
+function grad_kernel_matrix_compute(gp::GP, x::Vector{Float64})
+    num_samples= size(gp.X)[2]
+    k = zeros(num_samples)
+    grad_x_k = zeros(num_samples)
+    for i = 1:num_samples
+        k[i] = rbf_kernel(x, gp.X[:, i], gp.lengthscale, gp.variance)
+        grad_x_k[i] = -2*k[i]*norm(x - gp.X[:, i])
+        grad_x_k[i] /= gp.lengthscale^2
+    end
+    return grad_x_k, k
+end
+
+function rbf_kernel(x1::Vector{Float64}, x2::Vector{Float64}, lengthscale::Float64,
+variance::Float64)
     return variance*exp(-0.5*sum((x1 .- x2).^2)/(lengthscale^2))
 end
 
-function grad_kernel_matrix(gp::GP, x::Vector{Float64})
-    n1 = size(gp.X)
-    k = zeros(n1)
-    for i in 1:n1
-        k[i] = -2 * rbf_kernel(gp.X[:, i], x, gp.lengthscale, gp.variance)*(X[:, i] - x)
-        k[i] /= gp.lengthscale^2
-    end
-    return k
-end
-
-function predict(gp::GP, x_new::Matrix{Float64})
-    K_inv = gp.L' \ (gp.L \ gp.y)
-    K21 = compute_kernel_matrix(x_new, gp.X, gp.kernel, gp.lengthscale, gp.variance)
-    K22 = compute_kernel_matrix(x_new, x_new, gp.kernel, gp.lengthscale, gp.variance)
-    mu = K21 * K_inv
-    v = gp.L \ K21'
-    sigma2 = K22 - v' * v
-
-    return mu, diag(sigma2), K_inv
-end
-
 # need to compute derivative of this or either log EI.
-function EI(gp::GP, x::Matrix{Float64}, f_best::Float64)
+function EI(gp::GP, x::Matrix{Float64}, y_best::Float64)
     mean, var = predict(gp, x)
-    z = (f_best - mean) / std
+    z = (y_best - mean) / std
     cdf_z = cdf(Normal(), z)
     pdf_z = pdf(Normal(), z)
-    return (f_best - mean)*cdf_z + std*pdf_z
-end
-
-# HUGE DISCLAIMER: NEED TO TEST THOROUGHLY
-function compute_grad_log_EI(gp::GP, x::Matrix{Float64}, f_best)
-    mean, var = predict(gp, x)
-    z = (f_best - mean) / std
-    cdf_z = cdf(Normal(), z)
-    pdf_z = pdf(Normal(), z)
-    EI = (f_best - mean)*cdf + std*pdf
-    grad_x_k, k = grad_kernel_matrix(gp, x)
-    grad_mu = grad_x_k * L' \ (L \ y)
-    grad_sigma = -2 * grad_x_k' * (L \ k)
-
-    return (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI
+    return (y_best - mean)*cdf_z + std*pdf_z
 end
 
 function backtracking_line_search(gp::GP, x_current::Matrix{Float64})
@@ -107,13 +116,14 @@ function backtracking_line_search(gp::GP, x_current::Matrix{Float64})
     return alpha
 end
 
-function acquire_next_point(x_current::Matrix{Float64})
-    grad_log_EI = compute_grad_log_EI(x_current)
-    step_size = backtracking_line_search(x_current)
+function acquire_next_point(gp::GP, x_current::Vector{Float64}, y_best::Float64)
+    grad_log_EI = grad_log_EI_compute(gp, x_current, y_best)
+    step_size = backtracking_line_search(gp, x_current)
     x_next = x_current - step_size*grad_log_EI
+    return x_next
 end
 
-function update!(gp::GP, x::Vector{Float64}, y::Float64)
+function surrogate_model_update!(gp::GP, x::Vector{Float64}, y::Float64)
     X_new = [gp.X x]
     y_new = [gp.y; y]
     
@@ -125,14 +135,14 @@ function update!(gp::GP, x::Vector{Float64}, y::Float64)
         lengthscale_new, variance_new = optimize_hyperparameters(X_new, y_new,
         gp.kernel, gp.lengthscale, gp.variance)
 
-        K = compute_kernel_matrix(X_new, X_new, gp.kernel, lengthscale_new, variance_new)
+        K = kernel_matrix_compute(X_new, X_new, gp.kernel, lengthscale_new, variance_new)
         L_new = cholesky(K + 1e-10*I(size(K,1))).L
         L_new = Matrix(L_new)
     else
         # left-looking Cholesky update
-        K12 = compute_kernel_matrix(gp.X, reshape(x, :, 1), gp.kernel, gp.lengthscale,
+        K12 = kernel_matrix_compute(gp.X, reshape(x, :, 1), gp.kernel, gp.lengthscale,
         gp.variance)
-        K22 = compute_kernel_matrix(reshape(x, :, 1), reshape(x, :, 1), gp.kernel,
+        K22 = kernel_matrix_compute(reshape(x, :, 1), reshape(x, :, 1), gp.kernel,
         gp.lengthscale, gp.variance)
         
         L12 = gp.L \ K12
@@ -173,7 +183,7 @@ function log_marginal_likelihood(X::Matrix{Float64}, y::Vector{Float64}, kernel:
     variance = params[2]
     
     # Compute kernel matrix with current hyperparameters
-    K = compute_kernel_matrix(X, X, kernel, lengthscale, variance)
+    K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
     
     # Add small jitter for numerical stability
     n = size(K, 1)
@@ -187,10 +197,6 @@ function log_marginal_likelihood(X::Matrix{Float64}, y::Vector{Float64}, kernel:
     return -0.5 * dot(y, α) - sum(log.(diag(L))) - 0.5 * n * log(2π)
 end
 
-#TODO: make a function gradient of log-marginal likelihood
-
-#TODO: model_update()
-
 function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int;
                  n_init::Int=5)
     dimensions = size(bounds, 1)
@@ -202,48 +208,49 @@ function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int;
         X_init[d, :] = bounds[1, d] .+ (bounds[2, d] - bounds[1, d]) * rand(n_init)
     end
     y_init = [f(X_init[:, i]) for i in 1:n_init]
-    
+
     # Create and fit GP
     gp = GP(X_init, y_init, rbf_kernel, lengthscale, variance)
 
     # Keep track of all evaluated points
     X_all = copy(X_init)
     y_all = copy(y_init)
-    f_best = minimum(y_init)
+    y_best = minimum(y_init)
     x_best = X_init[:, argmin(y_init)]
-    
+
     # Optimization history
-    history = [(x_best, f_best)]
-    
+    history = [(x_best, y_best)]
+    x_current = x_best
+
     # Main optimization loop
     for i in 1:n_iterations
         # Select next point
-        next_x, ei = acquire_next_point(gp, bounds, f_best)
+        x_current, ei = acquire_next_point(gp, x_current, y_best)
         
         # Evaluate function
-        next_y = f(next_x)
-        
-        # Update GP
-        gp = update!(gp, next_x, next_y)
+        y_current = f(x_current)
         
         #TODO: every few iterations, model_update()
+        # Update GP
+        gp = surrogate_model_update!(gp, x_current, y_current)
+        
         
         # Update records
-        X_all = [X_all next_x]
-        y_all = [y_all; next_y]
+        X_all = [X_all x_current]
+        y_all = [y_all; y_current]
         
         # Update best observation
-        if next_y < f_best
-            f_best = next_y
-            x_best = next_x
-            push!(history, (x_best, f_best))
+        if y_current < y_best
+            y_best = y_current
+            x_best = x_current
+            push!(history, (x_best, y_best))
         end
 
-        println("Iteration $i: x = $next_x, f(x) = $next_y, Best = $f_best")
+        println("Iteration $i: x = $x_current, f(x) = $y_current, Best = $y_best")
     end
     lengthscale_final = gp.lengthscale
     variance_final = gp.variance
     println("Final lengthscale $lengthscale_final, final variance $variance_final")
     
-    return x_best, f_best, history, gp
+    return x_best, y_best, history, gp
 end
