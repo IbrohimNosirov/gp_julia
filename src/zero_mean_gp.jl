@@ -66,23 +66,18 @@ function grad_log_EI_compute(gp::GP, x::Vector{Float64}, y_best::Float64)
     cdf_z = cdf(Normal(), z)
     pdf_z = pdf(Normal(), z)
     EI = (y_best - mean[1])*cdf_z + std*pdf_z
-    grad_x_k, k = grad_kernel_matrix_compute(gp, x)
+    grad_x_k = grad_x_k_compute(gp, x)
+    print(size(grad_x_k))
     grad_mu = grad_x_k' * gp.L' \ (gp.L \ gp.y)
     grad_sigma = -2 * grad_x_k' * (gp.L \ k)
 
     return (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI
 end
 
-function grad_kernel_matrix_compute(gp::GP, x::Vector{Float64})
-    num_samples= size(gp.X)[2]
-    k = zeros(num_samples)
-    grad_x_k = zeros(num_samples)
-    for i = 1:num_samples
-        k[i] = rbf_kernel(x, gp.X[:, i], gp.lengthscale, gp.variance)
-        grad_x_k[i] = -2*k[i]*norm(x - gp.X[:, i])
-        grad_x_k[i] /= gp.lengthscale^2
-    end
-    return grad_x_k, k
+function grad_x_k_compute(gp::GP, x::Vector{Float64})
+    #TODO: sum up the partials for each training point.
+    k = rbf_kernel(x, gp.X[:, i], gp.lengthscale, gp.variance)
+    return k * -1/(gp.lengthscale^2) * x
 end
 
 function rbf_kernel(x1::Vector{Float64}, x2::Vector{Float64}, lengthscale::Float64,
