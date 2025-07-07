@@ -5,6 +5,10 @@ using Plots
 using Optim
 
 # David's notes: https://www.cs.cornell.edu/courses/cs6241/2025sp/lec/2025-03-11.html
+function rbf_kernel(x1::Vector{Float64}, x2::Vector{Float64}, lengthscale::Float64,
+variance::Float64)
+    return variance*exp(-0.5*sum((x1 .- x2).^2)/(lengthscale^2))
+end
 
 struct GP
     X::Matrix{Float64}
@@ -39,22 +43,21 @@ function predict(gp::GP, x_new::VecOrMat{Float64})
 end
 
 function kernel_matrix_compute(X1::VecOrMat{Float64}, X2::VecOrMat{Float64},
-kernel::Function, lengthscale::Float64, variance::Float64)
+k::Function, lengthscale::Float64, variance::Float64)
     n1 = size(X1, 2)
     n2 = size(X2, 2)
     K = zeros(n1, n2)
 
     for i in 1:n1
         for j in 1:n2
-            K[i, j] = kernel(X1[:, i], X2[:, j], lengthscale, variance)
+            K[i, j] = k(X1[:, i], X2[:, j], lengthscale, variance)
         end
     end
 
     return K
 end
 
-# HUGE DISCLAIMER: NEED TO TEST THOROUGHLY
-function grad_log_EI_compute(gp::GP, x::Vector{Float64}, y_best::Float64)
+function EI(x::Vector{Float64}, y_best::Float64, predict::Function)
     mean, var = predict(gp, x)
     std = 0
     if var[1] > 1e-14
@@ -65,57 +68,36 @@ function grad_log_EI_compute(gp::GP, x::Vector{Float64}, y_best::Float64)
     end
     cdf_z = cdf(Normal(), z)
     pdf_z = pdf(Normal(), z)
-    EI = (y_best - mean[1])*cdf_z + std*pdf_z
-    grad_x_k = grad_x_k_compute(gp, x)
-    print(size(grad_x_k))
-    grad_mu = grad_x_k' * gp.L' \ (gp.L \ gp.y)
-    grad_sigma = -2 * grad_x_k' * (gp.L \ k)
-
-    return (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI
-end
-
-function grad_x_k_compute(gp::GP, x::Vector{Float64})
-    #TODO: sum up the partials for each training point.
-    k = rbf_kernel(x, gp.X[:, i], gp.lengthscale, gp.variance)
-    return k * -1/(gp.lengthscale^2) * x
-end
-
-function rbf_kernel(x1::Vector{Float64}, x2::Vector{Float64}, lengthscale::Float64,
-variance::Float64)
-    return variance*exp(-0.5*sum((x1 .- x2).^2)/(lengthscale^2))
-end
-
-# need to compute derivative of this or either log EI.
-function EI(gp::GP, x::Matrix{Float64}, y_best::Float64)
-    mean, var = predict(gp, x)
-    z = (y_best - mean) / std
-    cdf_z = cdf(Normal(), z)
-    pdf_z = pdf(Normal(), z)
     return (y_best - mean)*cdf_z + std*pdf_z
 end
 
-function backtracking_line_search(gp::GP, x_current::Matrix{Float64})
-    alpha = 1
-    rho = 0.9
-    c = 0.9
-    p = -grad_log_EI/norm(grad_log_EI)
-    lhs, _ = predict(gp, x_k + alpha*p)
-    rhs, _ = predict(gp, x_k)
-    rhs += c*alpha*grad_log_EI * p
-    while lhs > rhs
-        lhs, _ = predict(gp, x_k + alpha*p)
-        rhs, _ = predict(gp, x_k)
-        rhs += c*alpha*grad_log_EI * p
-        alpha = rho * alpha
-    end
-    return alpha
-end
-
-function acquire_next_point(gp::GP, x_current::Vector{Float64}, y_best::Float64)
-    grad_log_EI = grad_log_EI_compute(gp, x_current, y_best)
-    step_size = backtracking_line_search(gp, x_current)
-    x_next = x_current - step_size*grad_log_EI
-    return x_next
+function acquire_next_point(gp::GP, EI::Function, x_current::Vector{Float64}, y_best::Float64)
+    # wrt x1; fix x2 
+#    function k_g!(storage::Matrix{Float64}, x1::Vector{Float64}, x2::Vector{Float64})
+#        storage = k(x1, x2, gp.lengthscale, gp.variance) * -1/(gp.lengthscale^2) * x1
+#    end
+#
+#    function logEI_g!(storage::Matrix{Float64}, EI::Function, k_g!::Function,
+#            predict::Function, x::Vector{Float64})
+#        # output should be a vector
+#        EI_value = EI(x, y_best)
+#        # TODO: Populate x_k_g with all kernel evaluations
+#        N = size(gp.X)[2]
+#        print("N ", N)
+#        print("size of x ", size(x)[1])
+#        grad_x_k = zeros(size(x)[1],N)
+#        for i=1:N
+#            grad_x_k[:,i] = k_g!(storage, x, X[:, i])
+#        end
+#        grad_mu = grad_x_k * gp.L' \ (gp.L \ gp.y)
+#        print("grad_mu ", grad_mu)
+##        grad_sigma = -2 * grad_x_k' * (gp.L \ k)
+##        storage = (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI_value
+#    end
+#
+    y_next = Optim.optimize(EI, x_current, LBFGS())
+    x_next = Optim.minimizer(y_next)
+    return x_next, y_next
 end
 
 function surrogate_model_update!(gp::GP, x::Vector{Float64}, y::Float64)
@@ -173,7 +155,7 @@ function optimize_hyperparameters(X, y, kernel, lengthscale, variance; method=LB
 end
 
 function log_marginal_likelihood(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
-                                 params::Vector{Float64})
+        params::Vector{Float64})
     lengthscale = params[1]
     variance = params[2]
     
@@ -220,16 +202,11 @@ function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int;
     # Main optimization loop
     for i in 1:n_iterations
         # Select next point
-        x_current, ei = acquire_next_point(gp, x_current, y_best)
-        
+        x_current, ei = acquire_next_point(gp, rbf_kernel, predict, x_current, y_best)
         # Evaluate function
         y_current = f(x_current)
-        
-        #TODO: every few iterations, model_update()
-        # Update GP
+        # Update GP every 5 iterations
         gp = surrogate_model_update!(gp, x_current, y_current)
-        
-        
         # Update records
         X_all = [X_all x_current]
         y_all = [y_all; y_current]
@@ -249,3 +226,4 @@ function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int;
     
     return x_best, y_best, history, gp
 end
+
