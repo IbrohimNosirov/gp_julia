@@ -6,7 +6,7 @@ using Optim
 
 # David's notes: https://www.cs.cornell.edu/courses/cs6241/2025sp/lec/2025-03-11.html
 function rbf_kernel(x1::Vector{Float64}, x2::Vector{Float64}, lengthscale::Float64,
-variance::Float64)
+        variance::Float64)
     return variance*exp(-0.5*sum((x1 .- x2).^2)/(lengthscale^2))
 end
 
@@ -19,7 +19,7 @@ struct GP
     variance::Float64
 
     function GP(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
-    lengthscale::Float64, variance::Float64)
+            lengthscale::Float64, variance::Float64)
         K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
         L = cholesky(K).L
         return new(X, y, kernel, L, lengthscale, variance)
@@ -47,7 +47,6 @@ k::Function, lengthscale::Float64, variance::Float64)
     n1 = size(X1, 2)
     n2 = size(X2, 2)
     K = zeros(n1, n2)
-
     for i in 1:n1
         for j in 1:n2
             K[i, j] = k(X1[:, i], X2[:, j], lengthscale, variance)
@@ -73,29 +72,30 @@ end
 
 function acquire_next_point(gp::GP, EI::Function, x_current::Vector{Float64}, y_best::Float64)
     # wrt x1; fix x2 
-#    function k_g!(storage::Matrix{Float64}, x1::Vector{Float64}, x2::Vector{Float64})
-#        storage = k(x1, x2, gp.lengthscale, gp.variance) * -1/(gp.lengthscale^2) * x1
-#    end
-#
-#    function logEI_g!(storage::Matrix{Float64}, EI::Function, k_g!::Function,
-#            predict::Function, x::Vector{Float64})
-#        # output should be a vector
-#        EI_value = EI(x, y_best)
-#        # TODO: Populate x_k_g with all kernel evaluations
-#        N = size(gp.X)[2]
-#        print("N ", N)
-#        print("size of x ", size(x)[1])
-#        grad_x_k = zeros(size(x)[1],N)
-#        for i=1:N
-#            grad_x_k[:,i] = k_g!(storage, x, X[:, i])
-#        end
-#        grad_mu = grad_x_k * gp.L' \ (gp.L \ gp.y)
-#        print("grad_mu ", grad_mu)
-##        grad_sigma = -2 * grad_x_k' * (gp.L \ k)
-##        storage = (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI_value
-#    end
-#
-    y_next = Optim.optimize(EI, x_current, LBFGS())
+    function k_g!(storage::Matrix{Float64}, x1::Vector{Float64}, x2::Vector{Float64})
+        storage = k(x1, x2, gp.lengthscale, gp.variance) * -1/(gp.lengthscale^2) * x1
+    end
+
+    function logEI_g!(storage::Matrix{Float64}, EI::Function, k_g!::Function,
+            predict::Function, x::Vector{Float64})
+        # output should be a vector
+        EI_value = EI(x, y_best)
+        # TODO: Populate x_k_g with all kernel evaluations
+        N = size(gp.X)[2]
+        print("N ", N)
+        print("size of x ", size(x)[1])
+        grad_x_k = zeros(size(x)[1],N)
+        for i=1:N
+            grad_x_k[:,i] = k_g!(storage, x, X[:, i])
+        end
+        grad_mu = grad_x_k * gp.L' \ (gp.L \ gp.y)
+        print("grad_mu ", grad_mu)
+#        grad_sigma = -2 * grad_x_k' * (gp.L \ k)
+#        storage = (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI_value
+    end
+
+    # TODO: define a closure
+    y_next = Optim.optimize(logEI, logEI_g!, x_current, LBFGS())
     x_next = Optim.minimizer(y_next)
     return x_next, y_next
 end
@@ -103,12 +103,9 @@ end
 function surrogate_model_update!(gp::GP, x::Vector{Float64}, y::Float64)
     X_new = [gp.X x]
     y_new = [gp.y; y]
-    
-    # Track how many data points we have after this update
     n_points = size(X_new, 2)
     
     if n_points % 5 == 0
-        # Optimize hyperparameters
         lengthscale_new, variance_new = optimize_hyperparameters(X_new, y_new,
         gp.kernel, gp.lengthscale, gp.variance)
 
@@ -116,7 +113,6 @@ function surrogate_model_update!(gp::GP, x::Vector{Float64}, y::Float64)
         L_new = cholesky(K + 1e-10*I(size(K,1))).L
         L_new = Matrix(L_new)
     else
-        # left-looking Cholesky update
         K12 = kernel_matrix_compute(gp.X, reshape(x, :, 1), gp.kernel, gp.lengthscale,
         gp.variance)
         K22 = kernel_matrix_compute(reshape(x, :, 1), reshape(x, :, 1), gp.kernel,
@@ -127,7 +123,6 @@ function surrogate_model_update!(gp::GP, x::Vector{Float64}, y::Float64)
         L_new = [gp.L zeros(Float64, size(gp.L, 1), 1); 
                     reshape(L12', 1, :) L22]
         
-        # Use existing hyperparameters (not optimizing every iteration)
         lengthscale_new = gp.lengthscale
         variance_new = gp.variance
     end
@@ -138,15 +133,13 @@ function optimize_hyperparameters(X, y, kernel, lengthscale, variance; method=LB
     initial_params = [lengthscale, variance]
     lower_bounds = [1e-6, 1e-6]
     upper_bounds = [10.0, 10.0]
-    
+
     function objective(params)
         return -log_marginal_likelihood(X, y, kernel, params)
     end
-    
+
     result = Optim.optimize(objective, lower_bounds, upper_bounds, initial_params,
     Fminbox(method))
-    
-    # Get optimized parameters
     opt_params = Optim.minimizer(result)
     opt_lengthscale = opt_params[1]
     opt_variance = opt_params[2]
@@ -158,60 +151,41 @@ function log_marginal_likelihood(X::Matrix{Float64}, y::Vector{Float64}, kernel:
         params::Vector{Float64})
     lengthscale = params[1]
     variance = params[2]
-    
-    # Compute kernel matrix with current hyperparameters
     K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
-    
-    # Add small jitter for numerical stability
     n = size(K, 1)
-    # Cholesky decomposition
     L = cholesky(K + 1e-6*I(size(K,1))).L
-    
-    # Compute alpha
     α = L' \ (L \ y)
     
-    # Compute log marginal likelihood
     return -0.5 * dot(y, α) - sum(log.(diag(L))) - 0.5 * n * log(2π)
 end
 
-function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int;
-                 n_init::Int=5)
+function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int; n_init::Int=5)
     dimensions = size(bounds, 1)
     lengthscale = 0.5
     variance = 1.2
-    # Initialize with random points
+
     X_init = zeros(dimensions, n_init)
     for d in 1:dimensions
         X_init[d, :] = bounds[1, d] .+ (bounds[2, d] - bounds[1, d]) * rand(n_init)
     end
     y_init = [f(X_init[:, i]) for i in 1:n_init]
 
-    # Create and fit GP
     gp = GP(X_init, y_init, rbf_kernel, lengthscale, variance)
 
-    # Keep track of all evaluated points
     X_all = copy(X_init)
     y_all = copy(y_init)
     y_best = minimum(y_init)
     x_best = X_init[:, argmin(y_init)]
 
-    # Optimization history
     history = [(x_best, y_best)]
     x_current = x_best
 
-    # Main optimization loop
     for i in 1:n_iterations
-        # Select next point
         x_current, ei = acquire_next_point(gp, rbf_kernel, predict, x_current, y_best)
-        # Evaluate function
         y_current = f(x_current)
-        # Update GP every 5 iterations
         gp = surrogate_model_update!(gp, x_current, y_current)
-        # Update records
         X_all = [X_all x_current]
         y_all = [y_all; y_current]
-        
-        # Update best observation
         if y_current < y_best
             y_best = y_current
             x_best = x_current
@@ -223,7 +197,6 @@ function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int;
     lengthscale_final = gp.lengthscale
     variance_final = gp.variance
     println("Final lengthscale $lengthscale_final, final variance $variance_final")
-    
+
     return x_best, y_best, history, gp
 end
-

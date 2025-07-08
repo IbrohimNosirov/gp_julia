@@ -38,7 +38,7 @@ for i=1:N
     f_grad_k = grad_k(rbf_kernel, x)
     f_fd = finite_difference(rbf_kernel, x)
     # compute [1 1]^Tgrad_k(x) - finite difference approximation.
-    print((f_grad_k[1] + f_grad_k[2] - f_fd), "\n")
+    print((f_grad_k[1] + f_grad_k[2] - f_fd) / (f_fd), "\n")
 end
 
 print("gradient of mu is gradient of k times a constant inv(K_{xx}) y\n")
