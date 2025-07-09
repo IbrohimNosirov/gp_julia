@@ -56,46 +56,54 @@ k::Function, lengthscale::Float64, variance::Float64)
     return K
 end
 
-function EI(x::Vector{Float64}, y_best::Float64, predict::Function)
-    mean, var = predict(gp, x)
-    std = 0
-    if var[1] > 1e-14
-        std = sqrt(var[1])
-        z = (y_best - mean[1]) / std
-    else
-        z = 0
-    end
-    cdf_z = cdf(Normal(), z)
-    pdf_z = pdf(Normal(), z)
-    return (y_best - mean)*cdf_z + std*pdf_z
-end
+function acquire_next_point(gp::GP, x_current::AbstractVector{T}, y_best::Float64) where {T}
+    function EI(x::AbstractVector{T}, y_best::Float64, predict::Function) where {T}
+        mean, var = predict(gp, x)
+        print("mean ", mean)
+        print("var ", var)
+        std = 0
+        #if var[1] > 1e-14
+        #    std = sqrt(var[1])
+        #    z = (y_best - mean[1]) / std
+        #else
+        #    z = 0
+        #end
+        #cdf_z = cdf(Normal(), z)
+        #pdf_z = pdf(Normal(), z)
 
-function acquire_next_point(gp::GP, EI::Function, x_current::Vector{Float64}, y_best::Float64)
+#        (y_best - mean)*cdf_z + std*pdf_z
+        return 1
+    end
+
     # wrt x1; fix x2 
-    function k_g!(storage::Matrix{Float64}, x1::Vector{Float64}, x2::Vector{Float64})
+    function k_g!(storage::AbstractVector{T}, x1::AbstractVector{T}, x2::AbstractVector{T}) where {T}
         storage = k(x1, x2, gp.lengthscale, gp.variance) * -1/(gp.lengthscale^2) * x1
     end
 
-    function logEI_g!(storage::Matrix{Float64}, EI::Function, k_g!::Function,
-            predict::Function, x::Vector{Float64})
+    function logEI_g!(storage::AbstractVector{T}, x::Vector{Float64}, EI::Function,
+            k_g!::Function) where {T}
         # output should be a vector
-        EI_value = EI(x, y_best)
+        EI_value = EI(x, y_best, predict)
         # TODO: Populate x_k_g with all kernel evaluations
         N = size(gp.X)[2]
-        print("N ", N)
-        print("size of x ", size(x)[1])
         grad_x_k = zeros(size(x)[1],N)
         for i=1:N
-            grad_x_k[:,i] = k_g!(storage, x, X[:, i])
+            k_g!(grad_x_k[:,i], x, X[:, i])
         end
+        pdf_z = pdf(Normal(), z)
+        cdf_z = cdf(Normal(), z)
         grad_mu = grad_x_k * gp.L' \ (gp.L \ gp.y)
-        print("grad_mu ", grad_mu)
-#        grad_sigma = -2 * grad_x_k' * (gp.L \ k)
-#        storage = (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI_value
+        grad_sigma = -2 * grad_x_k' * (gp.L \ k)
+
+        storage = (-cdf_z * grad_mu + pdf_z * grad_sigma)/EI_value
     end
 
+    storage = zeros(size(x_current))
+    #logEI_closure(x) = log(EI(storage, EI, k_g!, predict, x))
+    EI_closure(x) = EI(x, y_best, predict)
+    logEI_g_closure!(x) = logEI_g!(storage, x, EI_closure, k_g!, gp.predict)
     # TODO: define a closure
-    y_next = Optim.optimize(logEI, logEI_g!, x_current, LBFGS())
+    y_next = Optim.optimize(EI_closure, x_current, LBFGS())
     x_next = Optim.minimizer(y_next)
     return x_next, y_next
 end
@@ -181,7 +189,7 @@ function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int; n_init
     x_current = x_best
 
     for i in 1:n_iterations
-        x_current, ei = acquire_next_point(gp, rbf_kernel, predict, x_current, y_best)
+        x_current, ei = acquire_next_point(gp, x_current, y_best)
         y_current = f(x_current)
         gp = surrogate_model_update!(gp, x_current, y_current)
         X_all = [X_all x_current]
