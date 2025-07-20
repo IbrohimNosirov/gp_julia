@@ -1,26 +1,62 @@
 ---
-title: "Finite Difference Checks"
-format:
-    html:
-        code-fold: true
-engine: julia
+title: "Development Scratch Pad"
 ---
 
-### Parametric Plots
-
-Plot function pair (x(u), y(u)). 
-See @fig-parametric for an example.
+### Kernel finite difference check
 
 ```{julia}
-#| label: fig-parametric
-#| fig-cap: "Parametric Plots"
+using LinearAlgebra
+function Dphi_SE(s)
+    phi = exp((-s^2)/2)
+    dphi_div = -phi
+    dphi = dphi_div*s
+    Hphi = (-1+s^2)*phi
+    phi, dphi_div, dphi, Hphi
+end
 
-using Plots
+function fd_check_Dphi(name, Dphi, s, h=1e-6, tol=1e-8; verbose=false, kwargs ... )
+    phi, dphi_div, dphi, Hphi = Dphi(s; kwargs ... )
+    phi_p, dphi_div_p, dphi_p, Hphi_p = Dphi(s+h; kwargs ... )
+    phi_m, dphi_div_m, dphi_m, Hphi_m = Dphi(s-h; kwargs ... )
+    relerr1 = abs( (dphi_div*s - dphi)/dphi )
+    relerr2 = abs( (dphi-(phi_p - phi_m)/(2h))/dphi )
+    relerr3 = abs( (Hphi-(dphi_p - dphi_m)/(2h))/Hphi )
+    if verbose
+        println("Check $name: \t$relerr1\t$relerr2\t$relerr3")
+    elseif max(relerr1, relerr2, relerr3) > tol
+        error("Check $name:\t$relerr1\t$relerr2\t$relerr3")
+    end
+end
 
-plot(sin, 
-     x->sin(2x), 
-     0, 
-     2π, 
-     leg=false, 
-     fill=(0,:lavender))
+let s = 0.89
+    verbose = true
+    fd_check_Dphi("SE", Dphi_SE, s, verbose=verbose)
+end
+```
+
+```{julia}
+function check_approx(xref, x; rtol=1e-6, atol=0.0)
+    abserr = norm(xref-x)
+    refnorm = norm(xref)
+    if abserr > rtol*refnorm + atol
+        error("Check failed ($x v $xref): $abserr > $rtol * $refnorm + $atol")
+    end
+    abserr/refnorm
+end
+
+diff_fd(f, x; h=1e-6) = (f(x+h)-f(x-h))/(2h)
+
+check_fd(df_ref, f, x; h=1e-6, rtol=1e-6, atol=0.0) =
+    check_approx(df_ref, diff_fd(f, x, h=h), rtol=rtol, atol=atol)
+
+let
+    z = 0.123
+    using StatsFuns
+    #z = range(-4.0, 4.0, step=1e-3)
+    G(z) = normpdf(z) - z*normccdf(z)
+    dG(z) = -normccdf(z)
+    HG(z) = normpdf(z)
+    check_fd(dG(z), G, z)
+    check_fd(HG(z), dG, z)
+end
 ```

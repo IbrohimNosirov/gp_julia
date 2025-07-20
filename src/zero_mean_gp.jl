@@ -56,32 +56,30 @@ k::Function, lengthscale::Float64, variance::Float64)
     return K
 end
 
-function acquire_next_point(gp::GP, x_current::AbstractVector{T}, y_best::Float64) where {T}
-    function EI(x::AbstractVector{T}, y_best::Float64, predict::Function) where {T}
+function acquire_next_point(gp::GP, x_current::AbstractVector, y_best::Float64)
+    function EI(x::AbstractVector, y_best::Float64, predict::Function)
         mean, var = predict(gp, x)
-        print("mean ", mean)
-        print("var ", var)
         std = 0
-        #if var[1] > 1e-14
-        #    std = sqrt(var[1])
-        #    z = (y_best - mean[1]) / std
-        #else
-        #    z = 0
-        #end
-        #cdf_z = cdf(Normal(), z)
-        #pdf_z = pdf(Normal(), z)
+        if var[1] > 1e-14
+            std = sqrt(var[1])
+            z = (y_best - mean[1]) / std
+        else
+            z = 0
+        end
+        cdf_z = cdf(Normal(), z)
+        pdf_z = pdf(Normal(), z)
 
-#        (y_best - mean)*cdf_z + std*pdf_z
+        (y_best - mean[1])*cdf_z + std*pdf_z
         return 1
     end
 
     # wrt x1; fix x2 
-    function k_g!(storage::AbstractVector{T}, x1::AbstractVector{T}, x2::AbstractVector{T}) where {T}
+    function k_g!(storage::AbstractVector, x1::AbstractVector, x2::AbstractVector)
         storage = k(x1, x2, gp.lengthscale, gp.variance) * -1/(gp.lengthscale^2) * x1
     end
 
-    function logEI_g!(storage::AbstractVector{T}, x::Vector{Float64}, EI::Function,
-            k_g!::Function) where {T}
+    function logEI_g!(storage::AbstractVector, x::Vector{Float64}, EI::Function,
+            k_g!::Function)
         # output should be a vector
         EI_value = EI(x, y_best, predict)
         # TODO: Populate x_k_g with all kernel evaluations
@@ -99,12 +97,12 @@ function acquire_next_point(gp::GP, x_current::AbstractVector{T}, y_best::Float6
     end
 
     storage = zeros(size(x_current))
-    #logEI_closure(x) = log(EI(storage, EI, k_g!, predict, x))
+    logEI_closure(x) = log(EI(storage, EI, k_g!, predict, x))
     EI_closure(x) = EI(x, y_best, predict)
-    logEI_g_closure!(x) = logEI_g!(storage, x, EI_closure, k_g!, gp.predict)
-    # TODO: define a closure
-    y_next = Optim.optimize(EI_closure, x_current, LBFGS())
+    logEI_g_closure!(x) = logEI_g!(storage, x, EI, k_g!, predict)
+    y_next = Optim.optimize(logEI_closure, logEI_g_closure!, x_current, LBFGS())
     x_next = Optim.minimizer(y_next)
+
     return x_next, y_next
 end
 

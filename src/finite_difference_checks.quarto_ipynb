@@ -5,26 +5,90 @@
       "metadata": {},
       "source": [
         "---\n",
-        "title: \"Finite Difference Checks\"\n",
-        "format:\n",
-        "    html:\n",
-        "        code-fold: true\n",
+        "title: \"Development Scratch Pad\"\n",
         "---\n",
         "\n",
-        "```{julia}\n",
-        "using LinearAlgebra\n",
         "\n",
-        "print(2 + 2)\n",
-        "```"
+        "### Kernel finite difference check\n"
       ],
-      "id": "3ee16e05"
+      "id": "eeb7ca21"
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "using LinearAlgebra\n",
+        "function Dphi_SE(s)\n",
+        "    phi = exp((-s^2)/2)\n",
+        "    dphi_div = -phi\n",
+        "    dphi = dphi_div*s\n",
+        "    Hphi = (-1+s^2)*phi\n",
+        "    phi, dphi_div, dphi, Hphi\n",
+        "end\n",
+        "\n",
+        "function fd_check_Dphi(name, Dphi, s, h=1e-6, tol=1e-8; verbose=false, kwargs ... )\n",
+        "    phi, dphi_div, dphi, Hphi = Dphi(s; kwargs ... )\n",
+        "    phi_p, dphi_div_p, dphi_p, Hphi_p = Dphi(s+h; kwargs ... )\n",
+        "    phi_m, dphi_div_m, dphi_m, Hphi_m = Dphi(s-h; kwargs ... )\n",
+        "    relerr1 = abs( (dphi_div*s - dphi)/dphi )\n",
+        "    relerr2 = abs( (dphi-(phi_p - phi_m)/(2h))/dphi )\n",
+        "    relerr3 = abs( (Hphi-(dphi_p - dphi_m)/(2h))/Hphi )\n",
+        "    if verbose\n",
+        "        println(\"Check $name: \\t$relerr1\\t$relerr2\\t$relerr3\")\n",
+        "    elseif max(relerr1, relerr2, relerr3) > tol\n",
+        "        error(\"Check $name:\\t$relerr1\\t$relerr2\\t$relerr3\")\n",
+        "    end\n",
+        "end\n",
+        "\n",
+        "let s = 0.89\n",
+        "    verbose = true\n",
+        "    fd_check_Dphi(\"SE\", Dphi_SE, s, verbose=verbose)\n",
+        "end"
+      ],
+      "id": "ba7d04aa",
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "function check_approx(xref, x; rtol=1e-6, atol=0.0)\n",
+        "    abserr = norm(xref-x)\n",
+        "    refnorm = norm(xref)\n",
+        "    if abserr > rtol*refnorm + atol\n",
+        "        error(\"Check failed ($x v $xref): $abserr > $rtol * $refnorm + $atol\")\n",
+        "    end\n",
+        "    abserr/refnorm\n",
+        "end\n",
+        "\n",
+        "diff_fd(f, x; h=1e-6) = (f(x+h)-f(x-h))/(2h)\n",
+        "\n",
+        "check_fd(df_ref, f, x; h=1e-6, rtol=1e-6, atol=0.0) =\n",
+        "    check_approx(df_ref, diff_fd(f, x, h=h), rtol=rtol, atol=atol)\n",
+        "\n",
+        "let\n",
+        "    z = 0.123\n",
+        "    using StatsFuns\n",
+        "    #z = range(-4.0, 4.0, step=1e-3)\n",
+        "    G(z) = normpdf(z) - z*normccdf(z)\n",
+        "    dG(z) = -normccdf(z)\n",
+        "    HG(z) = normpdf(z)\n",
+        "    check_fd(dG(z), G, z)\n",
+        "    check_fd(HG(z), dG, z)\n",
+        "end"
+      ],
+      "id": "edea9f90",
+      "execution_count": null,
+      "outputs": []
     }
   ],
   "metadata": {
     "kernelspec": {
-      "display_name": "Python 3",
-      "language": "python",
-      "name": "python3"
+      "name": "julia-1.10",
+      "language": "julia",
+      "display_name": "Julia 1.10.5",
+      "path": "/Users/in67/Library/Jupyter/kernels/julia-1.10"
     }
   },
   "nbformat": 4,
