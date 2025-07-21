@@ -17,18 +17,18 @@ struct GP
     L::Matrix{Float64}
     lengthscale::Float64
     variance::Float64
+end
 
-    function GP(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
-            lengthscale::Float64, variance::Float64)
-        K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
-        L = cholesky(K).L
-        return new(X, y, kernel, L, lengthscale, variance)
-    end
+function GP(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
+        lengthscale::Float64, variance::Float64)
+    K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
+    L = cholesky(K).L
+    return new(X, y, kernel, L, lengthscale, variance)
+end
 
-    function GP(X::Matrix{Float64}, y::Vector{Float64}, L::Matrix{Float64},
-                kernel::Function, lengthscale::Float64, variance::Float64)
-        return new(X, y, kernel, L, lengthscale, variance)
-    end
+function GP(X::Matrix{Float64}, y::Vector{Float64}, L::Matrix{Float64},
+            kernel::Function, lengthscale::Float64, variance::Float64)
+    return new(X, y, kernel, L, lengthscale, variance)
 end
 
 function predict(gp::GP, x_new::VecOrMat{Float64})

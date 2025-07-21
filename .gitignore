@@ -27,3 +27,8 @@ Manifest.toml
 *.svg
 *.swo
 *.swp
+*.html
+*.quarto_ipynb
+*.js
+*.css
+*.vim

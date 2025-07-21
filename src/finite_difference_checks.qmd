@@ -44,7 +44,8 @@ function check_approx(xref, x; rtol=1e-6, atol=0.0)
     abserr/refnorm
 end
 
-diff_fd(f, x; h=1e-6) = (f(x+h)-f(x-h))/(2h)
+diff_fd(f, x; h=1e-6) = (f(x+h)-f(x-h))/(2h) # this is a function in assignment form.
+# NOTE: the last expression evaluated is a function's # return value.
 
 check_fd(df_ref, f, x; h=1e-6, rtol=1e-6, atol=0.0) =
     check_approx(df_ref, diff_fd(f, x, h=h), rtol=rtol, atol=atol)

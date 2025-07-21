@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Development Scratch Pad</title>
+<title>Non-zero mean field GP</title>
 <style>
 code{white-space: pre-wrap;}
 span.smallcaps{font-variant: small-caps;}
@@ -57,16 +57,16 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </style>
 
 
-<script src="finite_difference_checks_files/libs/clipboard/clipboard.min.js"></script>
-<script src="finite_difference_checks_files/libs/quarto-html/quarto.js"></script>
-<script src="finite_difference_checks_files/libs/quarto-html/popper.min.js"></script>
-<script src="finite_difference_checks_files/libs/quarto-html/tippy.umd.min.js"></script>
-<script src="finite_difference_checks_files/libs/quarto-html/anchor.min.js"></script>
-<link href="finite_difference_checks_files/libs/quarto-html/tippy.css" rel="stylesheet">
-<link href="finite_difference_checks_files/libs/quarto-html/quarto-syntax-highlighting-48ffa3e5b9d089919c6712c39e5b00f2.css" rel="stylesheet" id="quarto-text-highlighting-styles">
-<script src="finite_difference_checks_files/libs/bootstrap/bootstrap.min.js"></script>
-<link href="finite_difference_checks_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="finite_difference_checks_files/libs/bootstrap/bootstrap-c0367b04c37547644fece4185067e4a7.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script src="nz_mean_gp_files/libs/clipboard/clipboard.min.js"></script>
+<script src="nz_mean_gp_files/libs/quarto-html/quarto.js"></script>
+<script src="nz_mean_gp_files/libs/quarto-html/popper.min.js"></script>
+<script src="nz_mean_gp_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="nz_mean_gp_files/libs/quarto-html/anchor.min.js"></script>
+<link href="nz_mean_gp_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="nz_mean_gp_files/libs/quarto-html/quarto-syntax-highlighting-48ffa3e5b9d089919c6712c39e5b00f2.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="nz_mean_gp_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="nz_mean_gp_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="nz_mean_gp_files/libs/bootstrap/bootstrap-c0367b04c37547644fece4185067e4a7.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 
 
 </head>
@@ -79,7 +79,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title">Development Scratch Pad</h1>
+<h1 class="title">Non-zero mean field GP</h1>
 </div>
 
 
@@ -96,41 +96,32 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </header>
 
 
-<section id="kernel-finite-difference-check" class="level3">
-<h3 class="anchored" data-anchor-id="kernel-finite-difference-check">Kernel finite difference check</h3>
-<div id="37e7a7a3" class="cell" data-execution_count="1">
-<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode julia code-with-copy"><code class="sourceCode julia"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">using</span> <span class="bu">LinearAlgebra</span></span>
-<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">Dphi_SE</span>(s)</span>
-<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    phi <span class="op">=</span> <span class="fu">exp</span>((<span class="op">-</span>s<span class="op">^</span><span class="fl">2</span>)<span class="op">/</span><span class="fl">2</span>)</span>
-<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    dphi_div <span class="op">=</span> <span class="op">-</span>phi</span>
-<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    dphi <span class="op">=</span> dphi_div<span class="op">*</span>s</span>
-<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    Hphi <span class="op">=</span> (<span class="op">-</span><span class="fl">1</span><span class="op">+</span>s<span class="op">^</span><span class="fl">2</span>)<span class="op">*</span>phi</span>
-<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    phi, dphi_div, dphi, Hphi</span>
-<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<p>Random sampling.</p>
+<div id="3873da3a" class="cell" data-execution_count="1">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode julia code-with-copy"><code class="sourceCode julia"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">kronecker_quasirand</span>(d, N, start<span class="op">=</span><span class="fl">0</span>)</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="cn">φ</span> <span class="op">=</span> <span class="fl">1.0</span> <span class="op">+</span> <span class="fl">1.0</span><span class="op">/</span>d</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> k <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="fl">10</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>        gφ <span class="op">=</span> <span class="cn">φ</span><span class="op">^</span>(d<span class="op">+</span><span class="fl">1</span>) <span class="op">-</span> <span class="cn">φ</span> <span class="op">-</span> <span class="fl">1</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>        dgφ <span class="op">=</span> (d<span class="op">+</span><span class="fl">1</span>)<span class="op">*</span><span class="cn">φ</span><span class="op">^</span>d <span class="op">-</span> <span class="fl">1</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>        <span class="cn">φ</span> <span class="op">-=</span> gφ<span class="op">/</span>dgφ</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    αs <span class="op">=</span> [<span class="fu">mod</span>(<span class="fl">1.0</span><span class="op">/</span><span class="cn">φ</span><span class="op">^</span>j, <span class="fl">1.0</span>) for j<span class="op">=</span><span class="fl">1</span><span class="op">:</span>d]</span>
 <span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">fd_check_Dphi</span>(name, Dphi, s, h<span class="op">=</span><span class="fl">1e-6</span>, tol<span class="op">=</span><span class="fl">1e-8</span>; verbose<span class="op">=</span><span class="cn">false</span>, kwargs <span class="op">...</span> )</span>
-<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    phi, dphi_div, dphi, Hphi <span class="op">=</span> <span class="fu">Dphi</span>(s; kwargs <span class="op">...</span> )</span>
-<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    phi_p, dphi_div_p, dphi_p, Hphi_p <span class="op">=</span> <span class="fu">Dphi</span>(s<span class="op">+</span>h; kwargs <span class="op">...</span> )</span>
-<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    phi_m, dphi_div_m, dphi_m, Hphi_m <span class="op">=</span> <span class="fu">Dphi</span>(s<span class="op">-</span>h; kwargs <span class="op">...</span> )</span>
-<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>    relerr1 <span class="op">=</span> <span class="fu">abs</span>( (dphi_div<span class="op">*</span>s <span class="op">-</span> dphi)<span class="op">/</span>dphi )</span>
-<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>    relerr2 <span class="op">=</span> <span class="fu">abs</span>( (<span class="fu">dphi-</span>(phi_p <span class="op">-</span> phi_m)<span class="op">/</span>(<span class="fl">2</span>h))<span class="op">/</span>dphi )</span>
-<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>    relerr3 <span class="op">=</span> <span class="fu">abs</span>( (<span class="fu">Hphi-</span>(dphi_p <span class="op">-</span> dphi_m)<span class="op">/</span>(<span class="fl">2</span>h))<span class="op">/</span>Hphi )</span>
-<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> verbose</span>
-<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>        <span class="fu">println</span>(<span class="st">"Check </span><span class="sc">$</span>name<span class="st">: </span><span class="sc">\t$</span>relerr1<span class="sc">\t$</span>relerr2<span class="sc">\t$</span>relerr3<span class="st">"</span>)</span>
-<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">elseif</span> <span class="fu">max</span>(relerr1, relerr2, relerr3) <span class="op">&gt;</span> tol</span>
-<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a>        <span class="fu">error</span>(<span class="st">"Check </span><span class="sc">$</span>name<span class="st">:</span><span class="sc">\t$</span>relerr1<span class="sc">\t$</span>relerr2<span class="sc">\t$</span>relerr3<span class="st">"</span>)</span>
-<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
-<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
-<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-24"><a href="#cb1-24" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> s <span class="op">=</span> <span class="fl">0.89</span></span>
-<span id="cb1-25"><a href="#cb1-25" aria-hidden="true" tabindex="-1"></a>    verbose <span class="op">=</span> <span class="cn">true</span></span>
-<span id="cb1-26"><a href="#cb1-26" aria-hidden="true" tabindex="-1"></a>    <span class="fu">fd_check_Dphi</span>(<span class="st">"SE"</span>, Dphi_SE, s, verbose<span class="op">=</span>verbose)</span>
-<span id="cb1-27"><a href="#cb1-27" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-stdout">
-<pre><code>Check SE:   0.0 1.3566331720809654e-11  1.3901405318778967e-10</code></pre>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Compute the quasi-random sequence</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    Z <span class="op">=</span> <span class="fu">zeros</span>(d, N)</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> j <span class="op">=</span> <span class="fl">1</span><span class="op">:</span>N</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> i <span class="op">=</span> <span class="fl">1</span><span class="op">:</span>d</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>            Z[i,j] <span class="op">=</span> <span class="fu">mod</span>(<span class="fl">0.5</span> <span class="op">+</span> (start<span class="op">+</span>j)<span class="op">*</span>αs[i], <span class="fl">1.0</span>)</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">end</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>    Z</span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="14">
+<pre><code>kronecker_quasirand (generic function with 2 methods)</code></pre>
 </div>
 </div>
-<div id="712e600e" class="cell" data-execution_count="2">
+<p>Finite difference check.</p>
+<div id="39d7e2ea" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode julia code-with-copy"><code class="sourceCode julia"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">check_approx</span>(xref, x; rtol<span class="op">=</span><span class="fl">1e-6</span>, atol<span class="op">=</span><span class="fl">0.0</span>)</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    abserr <span class="op">=</span> <span class="fu">norm</span>(xref<span class="op">-</span>x)</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    refnorm <span class="op">=</span> <span class="fu">norm</span>(xref)</span>
@@ -144,22 +135,107 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="co"># </span><span class="al">NOTE</span><span class="co">: the last expression evaluated is a function's # return value.</span></span>
 <span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="fu">check_fd</span>(df_ref, f, x; h<span class="op">=</span><span class="fl">1e-6</span>, rtol<span class="op">=</span><span class="fl">1e-6</span>, atol<span class="op">=</span><span class="fl">0.0</span>) <span class="op">=</span></span>
-<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    <span class="fu">check_approx</span>(df_ref, <span class="fu">diff_fd</span>(f, x, h<span class="op">=</span>h), rtol<span class="op">=</span>rtol, atol<span class="op">=</span>atol)</span>
-<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span></span>
-<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    z <span class="op">=</span> <span class="fl">0.123</span></span>
-<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    <span class="im">using</span> <span class="bu">StatsFuns</span></span>
-<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>    <span class="co">#z = range(-4.0, 4.0, step=1e-3)</span></span>
-<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>    <span class="fu">G</span>(z) <span class="op">=</span> <span class="fu">normpdf</span>(z) <span class="op">-</span> <span class="fu">z*normccdf</span>(z)</span>
-<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>    <span class="fu">dG</span>(z) <span class="op">=</span> <span class="fu">-normccdf</span>(z)</span>
-<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>    <span class="fu">HG</span>(z) <span class="op">=</span> <span class="fu">normpdf</span>(z)</span>
-<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>    <span class="fu">check_fd</span>(<span class="fu">dG</span>(z), G, z)</span>
-<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a>    <span class="fu">check_fd</span>(<span class="fu">HG</span>(z), dG, z)</span>
-<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="3">
-<pre><code>1.3761144093341995e-11</code></pre>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    <span class="fu">check_approx</span>(df_ref, <span class="fu">diff_fd</span>(f, x, h<span class="op">=</span>h), rtol<span class="op">=</span>rtol, atol<span class="op">=</span>atol)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="15">
+<pre><code>check_fd (generic function with 1 method)</code></pre>
 </div>
 </div>
+<p>define kernel.</p>
+<div id="a422abf8" class="cell" data-execution_count="3">
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode julia code-with-copy"><code class="sourceCode julia"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">using</span> <span class="bu">DispatchDoctor</span>: @stable</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="pp">@stable</span> <span class="kw">function</span> <span class="fu">Dφ_SE</span>(s)</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="cn">φ</span> <span class="op">=</span> <span class="fu">exp</span>(<span class="op">-</span>s<span class="op">^</span><span class="fl">2</span><span class="op">/</span><span class="fl">2</span>)</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    dφ_div <span class="op">=</span> <span class="op">-</span><span class="cn">φ</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    dφ <span class="op">=</span> dφ_div<span class="op">*</span>s</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    Hφ <span class="op">=</span> (<span class="op">-</span><span class="fl">1</span> <span class="op">+</span> s<span class="op">^</span><span class="fl">2</span>)<span class="op">*</span><span class="cn">φ</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    <span class="cn">φ</span>, dφ_div, dφ, Hφ</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>s <span class="op">=</span> <span class="fl">2.0</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a><span class="fu">Dφ_SE</span>(s)</span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a><span class="pp">@stable</span> <span class="kw">function</span> <span class="fu">dist2</span>(x <span class="op">::</span><span class="dt"> AbstractVector{T}</span>, y <span class="op">::</span><span class="dt"> AbstractVector{T}</span>) <span class="kw">where</span> {T}</span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a>    s <span class="op">=</span> <span class="fu">zero</span>(T)</span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> k <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="fu">length</span>(x)</span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a>        dk <span class="op">=</span> x[k] <span class="op">-</span> y[k]</span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a>        s <span class="op">+=</span> dk <span class="op">*</span> dk</span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">end</span></span>
+<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a>    s</span>
+<span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb5-23"><a href="#cb5-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-24"><a href="#cb5-24" aria-hidden="true" tabindex="-1"></a><span class="pp">@stable</span> <span class="fu">dist</span>(x <span class="op">::</span><span class="dt"> AbstractVector{T}</span>, y <span class="op">::</span><span class="dt"> AbstractVector{T}</span>) <span class="kw">where</span> {T} <span class="op">=</span> <span class="fu">sqrt</span>(<span class="fu">dist2</span>(x,y))</span>
+<span id="cb5-25"><a href="#cb5-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-26"><a href="#cb5-26" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span></span>
+<span id="cb5-27"><a href="#cb5-27" aria-hidden="true" tabindex="-1"></a>x <span class="op">=</span> <span class="fu">randn</span>(<span class="fl">10</span>)</span>
+<span id="cb5-28"><a href="#cb5-28" aria-hidden="true" tabindex="-1"></a>y <span class="op">=</span> <span class="fu">randn</span>(<span class="fl">10</span>)</span>
+<span id="cb5-29"><a href="#cb5-29" aria-hidden="true" tabindex="-1"></a><span class="co"># including vs not including {T} doesn't make any difference.</span></span>
+<span id="cb5-30"><a href="#cb5-30" aria-hidden="true" tabindex="-1"></a><span class="pp">@time</span> <span class="fu">dist</span>(x,y)</span>
+<span id="cb5-31"><a href="#cb5-31" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb5-32"><a href="#cb5-32" aria-hidden="true" tabindex="-1"></a><span class="co"># </span><span class="al">TODO</span><span class="co">: write the finite difference check.</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>  0.000002 seconds</code></pre>
+</div>
+<div class="cell-output cell-output-display" data-execution_count="16">
+<pre><code>5.574919433172781</code></pre>
+</div>
+</div>
+<section id="define-kernel-context" class="level3">
+<h3 class="anchored" data-anchor-id="define-kernel-context">define kernel context</h3>
+<div id="b6f1fc0e" class="cell" data-execution_count="4">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode julia code-with-copy"><code class="sourceCode julia"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> KernelContext <span class="kw">end</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Question for David</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="co"># this is just custom pretty-printing?</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>(ctx <span class="op">::</span><span class="dt"> KernelContext</span>)(args <span class="op">...</span>) <span class="op">=</span> <span class="fu">kernel</span>(ctx, args <span class="op">...</span> )</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="kw">abstract type</span> RBFKernelContext{d} <span class="op">&lt;:</span><span class="dt"> KernelContext </span><span class="kw">end</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a><span class="fu">ndims</span>(<span class="op">::</span><span class="dt">RBFKernelContext{d}</span>) <span class="kw">where</span> {d} <span class="op">=</span> d</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">getθ</span>(ctx <span class="op">::</span><span class="dt"> KernelContext</span>)</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    θ <span class="op">=</span> <span class="fu">zeros</span>(<span class="fu">nhypers</span>(ctx))</span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    <span class="fu">getθ!</span>(θ, ctx)</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>    θ</span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a><span class="kw">macro</span> <span class="fu">rbf_simple_kernel</span>(T, φ_rbf, Dφ_rbf)</span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>    T, φ_rbf, Dφ_rbf <span class="op">=</span> <span class="fu">esc</span>(T), <span class="fu">esc</span>(φ_rbf), <span class="fu">esc</span>(Dφ_rbf)</span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">quote</span></span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a>        <span class="kw">struct</span> <span class="op">$</span>T{d} <span class="op">&lt;:</span><span class="dt"> $(esc</span>(<span class="op">:</span>RBFKernelContext)){d}</span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a>            l <span class="op">::</span><span class="dt"> Float64</span></span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>        <span class="kw">end</span></span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>        <span class="op">$</span>(<span class="fu">esc</span>(<span class="op">:</span><span class="cn">φ</span>))(<span class="op">::</span><span class="dt">$T</span>, s) <span class="op">=</span> <span class="op">$</span><span class="fu">φ_rbf</span>(s)</span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a>        <span class="op">$</span>(<span class="fu">esc</span>(<span class="op">:</span>Dφ))(<span class="op">::</span><span class="dt">$T</span>, s) <span class="op">=</span> <span class="op">$</span><span class="fu">Dφ_rbf</span>(s)</span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a>        <span class="op">$</span>(<span class="fu">esc</span>(<span class="op">:</span>nhypers))(<span class="op">::</span><span class="dt">$T</span>) <span class="op">=</span> <span class="fl">1</span></span>
+<span id="cb8-24"><a href="#cb8-24" aria-hidden="true" tabindex="-1"></a><span class="co">#        $(esc(:getθ!))(θ, ctx :: $T) = θ[1]=ctx.l</span></span>
+<span id="cb8-25"><a href="#cb8-25" aria-hidden="true" tabindex="-1"></a>        <span class="op">$</span>(<span class="fu">esc</span>(<span class="op">:</span>updateθ))(ctx <span class="op">::</span><span class="dt">$T{d}</span>, θ) <span class="kw">where</span> {d} <span class="op">=</span> <span class="op">$</span><span class="fu">T</span><span class="dt">{d}</span>(θ[<span class="fl">1</span>])</span>
+<span id="cb8-26"><a href="#cb8-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">end</span></span>
+<span id="cb8-27"><a href="#cb8-27" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span>
+<span id="cb8-28"><a href="#cb8-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-29"><a href="#cb8-29" aria-hidden="true" tabindex="-1"></a><span class="pp">@rbf_simple_kernel</span>(KernelSE, φ_SE, Dφ_SE)</span>
+<span id="cb8-30"><a href="#cb8-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-31"><a href="#cb8-31" aria-hidden="true" tabindex="-1"></a><span class="fu">kernel</span>(ctx <span class="op">::</span><span class="dt"> RBFKernelContext</span>, x <span class="op">::</span><span class="dt"> AbstractVector</span>, y <span class="op">::</span><span class="dt"> AbstractVector</span>) <span class="op">=</span></span>
+<span id="cb8-32"><a href="#cb8-32" aria-hidden="true" tabindex="-1"></a>    <span class="fu">φ</span>(ctx, <span class="fu">dist</span>(x, y)<span class="op">/</span>ctx.l)</span>
+<span id="cb8-33"><a href="#cb8-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-34"><a href="#cb8-34" aria-hidden="true" tabindex="-1"></a><span class="kw">function</span> <span class="fu">gθ_kernel!</span>(g <span class="op">::</span><span class="dt"> AbstractVector</span>, ctx <span class="op">::</span><span class="dt"> RBFKernelContext</span>,</span>
+<span id="cb8-35"><a href="#cb8-35" aria-hidden="true" tabindex="-1"></a>                    x <span class="op">::</span><span class="dt"> AbstractVector</span>, y <span class="op">::</span><span class="dt"> AbstractVector</span>, c<span class="op">=</span><span class="fl">1.0</span>)</span>
+<span id="cb8-36"><a href="#cb8-36" aria-hidden="true" tabindex="-1"></a>    l <span class="op">=</span> ctx.l</span>
+<span id="cb8-37"><a href="#cb8-37" aria-hidden="true" tabindex="-1"></a>    s <span class="op">=</span> <span class="fu">dist</span>(x,y)<span class="op">/</span>l</span>
+<span id="cb8-38"><a href="#cb8-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-39"><a href="#cb8-39" aria-hidden="true" tabindex="-1"></a><span class="kw">end</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="17">
+<pre><code>gθ_kernel! (generic function with 2 methods)</code></pre>
+</div>
+</div>
+</section>
+<section id="define-gpp-context" class="level3">
+<h3 class="anchored" data-anchor-id="define-gpp-context">define GPP context</h3>
+</section>
+<section id="hyperparameter-tuning" class="level3">
+<h3 class="anchored" data-anchor-id="hyperparameter-tuning">hyperparameter tuning</h3>
+</section>
+<section id="acquisition-functions" class="level3">
+<h3 class="anchored" data-anchor-id="acquisition-functions">acquisition functions</h3>
 </section>
 
 </main>
