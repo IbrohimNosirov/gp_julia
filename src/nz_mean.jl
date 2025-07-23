@@ -61,21 +61,27 @@ function getθ(ctx :: KernelContext)
     θ
 end
 
-macro rbf_simple_kernel(T, φ_rbf, Dφ_rbf)
-    T, φ_rbf, Dφ_rbf = esc(T), esc(φ_rbf), esc(Dφ_rbf)
-    quote
-        struct $T{d} <: $(esc(:RBFKernelContext)){d}
-            l :: Float64
-        end
-        $(esc(:φ))(::$T, s) = $φ_rbf(s)
-        $(esc(:Dφ))(::$T, s) = $Dφ_rbf(s)
-        $(esc(:nhypers))(::$T) = 1
-        $(esc(:getθ!))(θ, ctx :: $T) = θ[1]=ctx.l
-        $(esc(:updateθ))(ctx ::$T{d}, θ) where {d} = $T{d}(θ[1])
-    end
-end
-
-@rbf_simple_kernel(KernelSE, φ_SE, Dφ_SE)
-
 kernel(ctx :: RBFKernelContext, x :: AbstractVector, y :: AbstractVector) =
     φ(ctx, dist(x, y)/ctx.l)
+
+# gradient of k with respect to hyperparameters
+function gθ_kernel!(g :: AbstractVector, ctx :: RBFKernelContext,
+                    x :: AbstractVector, y :: AbstractVector, c=1.0)
+    l = ctx.l
+    s = dist(x,y)/l
+    _, _, dφ, _ = Dφ(ctx, s)
+    g[1] -= c*dφ*s/l
+    g
+end
+
+function Hθ_kernel!(H :: AbstractMatrix, ctx :: RBFKernelContext,
+                    x :: AbstractVector, y :: AbstractVector, c=1.0)
+    l = ctx.l
+    s = dist(x,y)/l
+    _, _, dφ, Hφ = Dφ(ctx, s)
+    H[1,1] += c*(Hφ*s + 2*dφ)*s/l^2
+    H
+end
+
+function gx_kernel!(g :: AbstractVector, ctx :: RBFKernelContext,
+                    x :: AbstractVector, y :: AbstractVector, c=1.0)
