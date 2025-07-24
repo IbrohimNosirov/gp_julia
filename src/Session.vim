@@ -45,13 +45,14 @@ else
   set shortmess=aoO
 endif
 badd +107 nz_mean_gp.qmd
-badd +80 nz_mean.jl
+badd +38 nz_mean.jl
+badd +0 zero_mean_gp.jl
 argglobal
 %argdel
 $argadd nz_mean_gp.qmd
-edit nz_mean.jl
+edit zero_mean_gp.jl
 argglobal
-balt nz_mean_gp.qmd
+balt nz_mean.jl
 setlocal autoindent
 setlocal backupcopy=
 setlocal nobinary
@@ -181,11 +182,11 @@ setlocal wrap
 setlocal wrapmargin=0
 silent! normal! zE
 let &fdl = &fdl
-let s:l = 80 - ((57 * winheight(0) + 29) / 59)
+let s:l = 1 - ((0 * winheight(0) + 29) / 59)
 if s:l < 1 | let s:l = 1 | endif
 keepjumps exe s:l
 normal! zt
-keepjumps 80
+keepjumps 1
 normal! 0
 tabnext 1
 if exists('s:wipebuf') && len(win_findbuf(s:wipebuf)) == 0
