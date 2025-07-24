@@ -5,6 +5,10 @@ using Plots
 using Optim
 using StatsFuns
 using DispatchDoctor: @stable
+using BenchmarkTools
+using Test
+
+diff_fd(f, x=0.0; h=1e-6) = (f(x+h) - f(x-h))/(2h)
 
 function kronecker_quasirand(d, N, start=0)
     φ = 1.0 + 1.0/d
@@ -38,14 +42,13 @@ end
 @stable dist(x :: AbstractVector{T}, y :: AbstractVector{T}) where {T} = sqrt(dist2(x,y))
 
 abstract type KernelContext end
+# convenience function
 (ctx :: KernelContext)(args ... ) = kernel(ctx, args ... )
 
 abstract type RBFKernelContext{d} <: KernelContext end
 
 ndims(::RBFKernelContext{d}) where {d} = d
 
-# squared exponential kernel.
-φ_SE(s :: Float64) = exp(-s^2/2)
 function Dφ_SE(s :: Float64)
     φ = exp(-s^2/2)
     dφ_div = -φ
@@ -59,6 +62,9 @@ struct KernelSE{d} <: RBFKernelContext{d}
 end
 
 # tie the kernel context into operations I do all the time.
+# squared exponential kernel.
+φ_SE(s :: Float64) = exp(-s^2/2)
+# pass kernel into Kernel context.
 φ(:: KernelSE, s) = φ_SE(s)
 Dφ(:: KernelSE, s) = Dφ_SE(s)
 nhypers(:: KernelSE) = 1
@@ -68,6 +74,7 @@ updateθ!(ctx :: KernelSE{d}, θ) where {d} = ctx.l=θ[1]
 kernel(ctx :: RBFKernelContext, x :: AbstractVector, y :: AbstractVector) =
 φ(ctx, dist(x,y)/ctx.l)
 
+# convenience function.
 function getθ(ctx :: KernelContext)
     θ = zeros(nhypers(ctx))
     getθ!(θ, ctx)
@@ -100,18 +107,19 @@ function kernel_gx!(g :: AbstractVector, ctx :: RBFKernelContext,
     s = ρ/l
     _, _, dφ, _ = Dφ(ctx, s)
     if ρ != 0.0
-        dφ != ctx.l
+        dφ /= ctx.l
         C = c*dφ/ρ
         for i = 1:d
             g[i] += C*(x[i] - y[i])
         end
     end
+    g
 end
 
 function kernel_Hx!(H :: AbstractMatrix, ctx :: RBFKernelContext,
                     x :: AbstractVector, y :: AbstractVector, c=1.0)
     l = ctx.l
-    d = dims(ctx)
+    d = ndims(ctx)
     ρ = dist(x,y)
     s = ρ/l
     _, dφ_div, _, Hφ = Dφ(ctx, s)
@@ -133,15 +141,63 @@ function kernel_Hx!(H :: AbstractMatrix, ctx :: RBFKernelContext,
     H
 end
 
-#let
-#x, y = [0.1; 0.2], [0.8; 0.8]
-#ℓ = 0.2+rand()
-#check_fd(gθ_kernel(KernelSE{2}(ℓ),x,y)[1],
-#s->kernel(KernelSE{2}(ℓ+s),x,y), 0.0),
-#check_fd(Hθ_kernel(KernelSE{2}(ℓ),x,y)[1,1],
-#s->gθ_kernel(KernelSE{2}(ℓ+s),x,y)[1], 0.0)
-#end
-# TODO: Add convenience functions that output things, if need be.
+# convenience functions
+kernel_gθ_alloc(ctx :: RBFKernelContext,
+                x :: AbstractVector, y :: AbstractVector) =
+    kernel_gθ!(zeros(nhypers(ctx)), ctx, x, y)
+
+kernel_Hθ_alloc(ctx :: RBFKernelContext,
+                x :: AbstractVector, y :: AbstractVector) = 
+    kernel_Hθ!(zeros(nhypers(ctx), nhypers(ctx)), ctx, x, y)
+
+kernel_gx_alloc(ctx :: RBFKernelContext{d},
+                x :: AbstractVector, y :: AbstractVector) where {d} =
+    kernel_gx!(zeros(d), ctx, x, y)
+
+kernel_Hx_alloc(ctx :: RBFKernelContext{d},
+                x :: AbstractVector, y :: AbstractVector) where {d} =
+    kernel_Hx!(zeros(d,d), ctx, x, y)
+
+let
+    function fd_check_Dφ(Dφ, s; kwargs ... )
+        φ, dφ_div, dφ, Hφ = Dφ(s; kwargs ... )
+        @test dφ_div*s ≈ dφ
+        @test dφ ≈ diff_fd(s->Dφ(s; kwargs ... )[1], s) rtol=1e-6
+        @test Hφ ≈ diff_fd(s->Dφ(s; kwargs ... )[3], s) rtol=1e-6
+    end
+    
+    @testset "SE kernel derivative check" begin
+        s = .123
+        @testset "SE" fd_check_Dφ(Dφ_SE, s)
+    end
+
+    @testset "Kernel hyper derivatives" begin
+        x = [0.1; 0.2]
+        y = [0.8; 0.8]
+        l = 0.123
+        k_ctx(l) = KernelSE{2}(l)
+        # convenience function to be able to call struct as a function
+        k(l) = kernel(k_ctx(l), x, y)
+        g(l) = kernel_gθ_alloc(k_ctx(l), x, y)[1]
+        H(l) = kernel_Hθ_alloc(k_ctx(l), x, y)[1,1]
+        @test g(l) ≈ diff_fd(k, l) rtol=1e-6
+        @test H(l) ≈ diff_fd(g, l) rtol=1e-6
+    end
+
+    @testset "Kernel spatial derivatives" begin
+        x = [0.2; 0.4]
+        y = [0.3; 0.7]
+        dx =[0.3; 0.5] # "what is the rate of change of x in the direction of this vector?"
+        l = 0.32
+        k_ctx = KernelSE{2}(l)
+        # convenience function to be able to call struct as a function
+        k(x) = kernel(k_ctx, x, y)
+        g(x) = kernel_gx_alloc(k_ctx, x, y)
+        H(x) = kernel_Hx_alloc(k_ctx, x, y)
+        @test g(x)' * dx ≈ diff_fd(s->k(x + s*dx)) rtol=1e-6 
+        @test H(x) * dx ≈ diff_fd(s->g(x + s*dx)) rtol=1e-6
+    end
+end
 
 function kernel!(KXX :: AbstractMatrix, k :: KernelContext, X :: AbstractMatrix)
     for j = 1:size(X,2)
@@ -178,6 +234,7 @@ function kernel!(KXY :: AbstractMatrix, k :: KernelContext,
     KXY
 end
 
+# convenience functions.
 kernel_alloc(k :: KernelContext, X :: AbstractMatrix) =
     kernel!(zeros(size(X,2), size(X,2)), k, X)
 
@@ -187,15 +244,15 @@ kernel_alloc(k :: KernelContext, X :: AbstractMatrix, z :: AbstractVector) =
 kernel_alloc(k :: KernelContext, X :: AbstractMatrix, Y :: AbstractMatrix) = 
     kernel!(zeros(size(X,2), size(Y,2)), k, X, Y)
 
-let 
-    Zk = kronecker_quasirand(2, 10)
-    k_ctx = KernelSE{2}(1.0)
-
-    KXX1 = @time kernel_alloc(k_ctx, Zk)
-    KXX2 = @time kernel_alloc(k_ctx, Zk, Zk)
-    KXz2 = @time kernel_alloc(k_ctx, Zk, Zk[:,1])
-end
-# TODO: implement kernel operation with shift.
+# test that everything works.
+#let 
+#    Zk = kronecker_quasirand(2, 10)
+#    k_ctx = KernelSE{2}(1.0)
+#
+#    @time KXX1 = kernel_alloc(k_ctx, Zk)
+#    @time KXX2 = kernel_alloc(k_ctx, Zk, Zk)
+#    @time KXz2 = kernel_alloc(k_ctx, Zk, Zk[:,1])
+#end
 
 # Julia docs Constructors: It is good practice to provide as few inner constructor methods as
 # possible: only those taking all arguments explicitly and enforcing essential error checking
@@ -320,9 +377,9 @@ end
 #        hi :: AbstractVector) 
 #    y_best = minimum(gety(gp))
 #    fun(x) = Hgx_αNLEI(gp, x, y_best)[1]
-#    fun_grad!(g, x) = copyto!(g, Hgx_αNLEI(gp, x, y_best)[2])
-#    fun_hess!(g, x) = copyto!(g, Hgx_αNLEI(gp, x, y_best)[3])
-#    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, x0)
+#    fun_g!(g, x) = copyto!(g, Hgx_αNLEI(gp, x, y_best)[2])
+#    fun_H!(g, x) = copyto!(g, Hgx_αNLEI(gp, x, y_best)[3])
+#    df = TwiceDifferentiable(fun, fun_g!, fun_H!, x0)
 #    dfc = TwiceDifferentiableConstraints(lo, hi)
 #    res = optimize(df, dfc, x0, IPNewton())
 #end
