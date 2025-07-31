@@ -5,7 +5,6 @@ using Plots
 using Optim
 using StatsFuns
 using DispatchDoctor: @stable
-using BenchmarkTools
 using Test
 
 diff_fd(f, x=0.0; h=1e-6) = (f(x+h) - f(x-h))/(2h)
@@ -79,6 +78,67 @@ function getθ(ctx :: KernelContext)
     θ = zeros(nhypers(ctx))
     getθ!(θ, ctx)
     θ
+end
+
+function kernel!(KXX :: AbstractMatrix, k_ctx :: KernelContext, X :: AbstractMatrix,
+                 η :: Real = 0.0)
+    for j = 1:size(X,2)
+        xj = @view X[:,j]
+        KXX[j,j] = k_ctx(xj, xj) + η
+        for i = 1:j-1
+            xi = @view X[:,i]
+            kij = k_ctx(xi, xj)
+            KXX[i,j] = kij
+            KXX[j,i] = kij
+        end
+    end
+    KXX
+end
+
+function kernel!(KXz :: AbstractVector, k_ctx :: KernelContext,
+                 X :: AbstractMatrix, z :: AbstractVector)
+    for i = 1:size(X,2)
+        xi = @view X[:,i]
+        KXz[i] = k_ctx(xi, z)
+    end
+    KXz
+end
+
+function kernel!(KXY :: AbstractMatrix, k_ctx :: KernelContext,
+                 X :: AbstractMatrix, Y :: AbstractMatrix)
+    for j = 1:size(Y,2)
+        yj = @view Y[:,j]
+        for i = 1:size(X,2)
+            xi = @view X[:,i]
+            KXY[i,j] = k_ctx(xi,yj)
+        end
+    end
+    KXY
+end
+
+# convenience functions.
+kernel_alloc(k_ctx :: KernelContext, X :: AbstractMatrix, η :: Real = 0.0) =
+    kernel!(zeros(size(X,2), size(X,2)), k_ctx, X, η)
+
+kernel_alloc(k_ctx :: KernelContext, X :: AbstractMatrix, z :: AbstractVector) =
+    kernel!(zeros(size(X,2)), k_ctx, X, z)
+
+kernel_alloc(k_ctx :: KernelContext, X :: AbstractMatrix, Y :: AbstractMatrix) = 
+    kernel!(zeros(size(X,2), size(Y,2)), k_ctx, X, Y)
+
+let 
+    Zk = kronecker_quasirand(2, 10)
+    k_ctx = KernelSE{2}(1.0)
+    Ktemp = zeros(10,10)
+    Kvtemp = zeros(10)
+    Zk1 = Zk[:,1]
+
+    KXX1 = @time kernel_alloc(k_ctx, Zk)
+    KXX2 = @time kernel_alloc(k_ctx, Zk, Zk)
+    KXz2 = @time kernel_alloc(k_ctx, Zk, Zk[:,1])
+    @time kernel!(Ktemp, k_ctx, Zk)
+    @time kernel!(Ktemp, k_ctx, Zk, Zk)
+    @time kernel!(Kvtemp, k_ctx, Zk, Zk1)
 end
 
 function kernel_gθ!(g :: AbstractVector, ctx :: RBFKernelContext,
@@ -199,70 +259,13 @@ let
     end
 end
 
-function kernel!(KXX :: AbstractMatrix, k :: KernelContext, X :: AbstractMatrix)
-    for j = 1:size(X,2)
-        xj = @view X[:,j]
-        KXX[j,j] = k(xj, xj)
-        for i = 1:j-1
-            xi = @view X[:,i]
-            kij = k(xi, xj)
-            KXX[i,j] = kij
-            KXX[j,i] = kij
-        end
-    end
-    KXX
-end
-
-function kernel!(KXz :: AbstractVector, k :: KernelContext,
-                 X :: AbstractMatrix, z :: AbstractVector)
-    for i = 1:size(X,2)
-        xi = @view X[:,i]
-        KXz[i] = k(xi, z)
-    end
-    KXz
-end
-
-function kernel!(KXY :: AbstractMatrix, k :: KernelContext,
-                 X :: AbstractMatrix, Y :: AbstractMatrix)
-    for j = 1:size(Y,2)
-        yj = @view Y[:,j]
-        for i = 1:size(X,2)
-            xi = @view X[:,i]
-            KXY[i,j] = k(xi,yj)
-        end
-    end
-    KXY
-end
-
-# convenience functions.
-kernel_alloc(k :: KernelContext, X :: AbstractMatrix) =
-    kernel!(zeros(size(X,2), size(X,2)), k, X)
-
-kernel_alloc(k :: KernelContext, X :: AbstractMatrix, z :: AbstractVector) =
-    kernel!(zeros(size(X,2)), k, X, z)
-
-kernel_alloc(k :: KernelContext, X :: AbstractMatrix, Y :: AbstractMatrix) = 
-    kernel!(zeros(size(X,2), size(Y,2)), k, X, Y)
-
-let 
-    Zk = kronecker_quasirand(2, 10)
-    k_ctx = KernelSE{2}(1.0)
-    Ktemp = zeros(10,10)
-    Kvtemp = zeros(10)
-    Zk1 = Zk[:,1]
-
-    KXX1 = @time kernel_alloc(k_ctx, Zk)
-    KXX2 = @time kernel_alloc(k_ctx, Zk, Zk)
-    KXz2 = @time kernel_alloc(k_ctx, Zk, Zk[:,1])
-    KXX2 = @time kernel!(Ktemp, k_ctx, Zk)
-    KXX3 = @time kernel!(Ktemp, k_ctx, Zk, Zk)
-    KXz2 = @time kernel!(Kvtemp, k_ctx, Zk, Zk1)
-end
-
 #=
 Extended Cholesky:
-Now that we have some data structures, we need a mechanism for making predictions.
-    We do this by computing, storing, and adding to a Cholesky factorization.
+Now that we have some data structures, we need a mechanism for making predictions, running the
+    optimization, and so forth.
+    Julia comes with a Cholesky function, (cholesky!). We'll need to compute, store, and
+        extend the kernel Cholesky data structure.
+    There are two additional things to remember for extending
         ∙ by default in Julia, Cholesky is stored in the upper triangle.
         ∙ BLAS symmetric rank-k update 'syrk' is an in-place call better optimized than
             A22 .-= R12'*R12.
@@ -273,6 +276,32 @@ Now that we have some data structures, we need a mechanism for making prediction
        |    0    |R22|
        |_________|___|
 =#
+
+kernel_cholesky(ctx :: KernelContext, X :: AbstractMatrix) =
+    cholesky!(kernel_alloc(ctx, X))
+    
+kernel_cholesky!(KXX :: AbstractMatrix, ctx :: KernelContext, X :: AbstractMatrix) =
+    cholesky!(kernel!(KXX, ctx, X))
+
+kernel_cholesky(ctx :: KernelContext, X :: AbstractMatrix, η :: Real) =
+    cholesky!(kernel_alloc(ctx, X, η))
+
+kernel_cholesky!(KXX :: AbstractMatrix, ctx :: KernelContext, X :: AbstractMatrix, η :: Real)=
+    cholesky!(kernel!(KXX, ctx, X, η))
+
+let
+    Zk = kronecker_quasirand(2, 10)
+    k_ctx = KernelSE{2}(1.0)
+    Ktemp = zeros(10,10)
+    Kvtemp = zeros(10)
+    Zk1 = Zk[:,1]
+    η = 1e-8
+
+    KXX = @time kernel_cholesky(k_ctx, Zk)
+    @time kernel_cholesky!(Ktemp, k_ctx, Zk)
+    KXX2 = @time kernel_cholesky(k_ctx, Zk, η)
+    @time kernel_cholesky!(Ktemp, k_ctx, Zk, η)
+end
 
 function extend_cholesky!(storage_mtrx::AbstractMatrix, n, m)
     #=
@@ -288,7 +317,6 @@ function extend_cholesky!(storage_mtrx::AbstractMatrix, n, m)
     A12 = @view storage_mtrx[1:n, n+1:m]
     A22 = @view storage_mtrx[n+1:m, n+1:m]
 
-    
     ldiv!(UpperTriangular(R11)', A12)         # R12 = R11' \ A12
     BLAS.syrk!('U', 'T', -1.0, A12, 1.0, A22) # S = A22 - R12'*R12
     cholesky!(Symmetric(A22))
@@ -312,9 +340,8 @@ end
     @test Chol_2.U ≈ A_full.U
 end
 
-@testset "Check tridiagonalization" begin
-
-end
+# TODO: Tridiagonalization. I don't have a solid reason to do this right now, so I'm going to
+    # move on for the time-being.
 
 #=
 Julia docs
@@ -324,6 +351,9 @@ Julia docs
    auxiliary transformations, should be provided as outer constructors that call the inner
    constructors to do the heavy lifting. This separation is typically quite natural.
 =#
+
+# TODO: make dθ_kernel! I don't have a solid reason for this, but it's in the notes, so I'm
+    # going to skip for the moment.
 
 struct GP
     X::Matrix{Float64}
