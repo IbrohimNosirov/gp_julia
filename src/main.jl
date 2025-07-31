@@ -38,7 +38,7 @@ function plot_bo_results(gp, X_all, x_best)
 
     # Create single plot with true function contours and GP fit
     p = contour(x1_range, x2_range, z, levels=20, color=:viridis, alpha=0.7,
-              xlabel="x₁", ylabel="x₂", title="Branin Function with GP Fit")
+              xlabel="x1", ylabel="x2", title="Branin Function with GP Fit")
 
     # Add sampled points
     scatter!(p, [X_all[1, i] for i in 1:size(X_all, 2)], 

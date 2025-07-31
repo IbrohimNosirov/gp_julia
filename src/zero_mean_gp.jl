@@ -49,7 +49,7 @@ abstract type RBFKernelContext{d} <: KernelContext end
 
 ndims(::RBFKernelContext{d}) where {d} = d
 
-function Dφ_SE(s :: Float64)
+@stable function Dφ_SE(s :: Float64)
     φ = exp(-s^2/2)
     dφ_div = -φ
     dφ = dφ_div*s
@@ -244,43 +244,109 @@ kernel_alloc(k :: KernelContext, X :: AbstractMatrix, z :: AbstractVector) =
 kernel_alloc(k :: KernelContext, X :: AbstractMatrix, Y :: AbstractMatrix) = 
     kernel!(zeros(size(X,2), size(Y,2)), k, X, Y)
 
-# test that everything works.
-#let 
-#    Zk = kronecker_quasirand(2, 10)
-#    k_ctx = KernelSE{2}(1.0)
-#
-#    @time KXX1 = kernel_alloc(k_ctx, Zk)
-#    @time KXX2 = kernel_alloc(k_ctx, Zk, Zk)
-#    @time KXz2 = kernel_alloc(k_ctx, Zk, Zk[:,1])
-#end
+let 
+    Zk = kronecker_quasirand(2, 10)
+    k_ctx = KernelSE{2}(1.0)
+    Ktemp = zeros(10,10)
+    Kvtemp = zeros(10)
+    Zk1 = Zk[:,1]
 
-# Julia docs Constructors: It is good practice to provide as few inner constructor methods as
-# possible: only those taking all arguments explicitly and enforcing essential error checking
-# and transformation. Additional convenience constructor methods, supplying default values or
-# auxiliary transformations, should be provided as outer constructors that call the inner
-# constructors to do the heavy lifting. This separation is typically quite natural.
-#struct GP
-#    X::Matrix{Float64}
-#    y::Vector{Float64}
-#    kernel::Function
-#    L::Matrix{Float64}
-#    lengthscale::Float64
-#    variance::Float64
-#    # check the sizes on X and y
-#    # check that size of L matches X
-#    function GP(X::Matrix{Float64}, y::Vector{Float64}, L::Matrix{Float64},
-#                kernel::Function, lengthscale::Float64, variance::Float64)
-#        return new(X, y, kernel, L, lengthscale, variance)
-#    end
-#
-#    function GP(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
-#            lengthscale::Float64, variance::Float64)
-#        K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
-#        L = cholesky(K).L
-#        return new(X, y, kernel, L, lengthscale, variance)
-#    end
-#end
-#
+    KXX1 = @time kernel_alloc(k_ctx, Zk)
+    KXX2 = @time kernel_alloc(k_ctx, Zk, Zk)
+    KXz2 = @time kernel_alloc(k_ctx, Zk, Zk[:,1])
+    KXX2 = @time kernel!(Ktemp, k_ctx, Zk)
+    KXX3 = @time kernel!(Ktemp, k_ctx, Zk, Zk)
+    KXz2 = @time kernel!(Kvtemp, k_ctx, Zk, Zk1)
+end
+
+#=
+Extended Cholesky:
+Now that we have some data structures, we need a mechanism for making predictions.
+    We do this by computing, storing, and adding to a Cholesky factorization.
+        ∙ by default in Julia, Cholesky is stored in the upper triangle.
+        ∙ BLAS symmetric rank-k update 'syrk' is an in-place call better optimized than
+            A22 .-= R12'*R12.
+        _____________
+       |         |   |
+       |    R    |R12|
+       |_________|___|
+       |    0    |R22|
+       |_________|___|
+=#
+
+function extend_cholesky!(storage_mtrx::AbstractMatrix, n, m)
+    #=
+        storage_mtrx    a matrix with pre-Cholesky information, ready for in-place Cholesky.
+        n::Integer      start of extension
+        m::Integer      end of extension
+    =#
+    # Cholesky with space for extension
+    R           = @view storage_mtrx[1:m, 1:m]
+    # current Cholesky
+    R11         = @view storage_mtrx[1:n, 1:n]
+    # new rows with pre-Cholesky values
+    A12 = @view storage_mtrx[1:n, n+1:m]
+    A22 = @view storage_mtrx[n+1:m, n+1:m]
+
+    
+    ldiv!(UpperTriangular(R11)', A12)         # R12 = R11' \ A12
+    BLAS.syrk!('U', 'T', -1.0, A12, 1.0, A22) # S = A22 - R12'*R12
+    cholesky!(Symmetric(A22))
+
+    # Return extended cholesky view
+    Cholesky(UpperTriangular(R))
+end
+
+@testset "Check Cholesky extension" begin
+    # Pre-generated random matrix
+    A = [1.362     0.767029  0.991061  1.07994  1.35389;
+         0.767029  1.55874   1.36436   1.5897   1.34834;
+         0.991061  1.36436   1.49529   1.46581  1.43195;
+         1.07994   1.5897    1.46581   1.97641  1.69469;
+         1.35389   1.34834   1.43195   1.69469  2.19448]
+    A_full = cholesky(A)
+
+    Chol_1 = extend_cholesky!(A, 0, 3)
+    @test Chol_1.U ≈ A_full.U[1:3,1:3]
+    Chol_2 = extend_cholesky!(A, 3, 5)
+    @test Chol_2.U ≈ A_full.U
+end
+
+@testset "Check tridiagonalization" begin
+
+end
+
+#=
+Julia docs
+   Constructors: It is good practice to provide as few inner constructor methods as possible:
+   only those taking all arguments explicitly and enforcing essential error checking and
+   transformation. Additional convenience constructor methods, supplying default values or
+   auxiliary transformations, should be provided as outer constructors that call the inner
+   constructors to do the heavy lifting. This separation is typically quite natural.
+=#
+
+struct GP
+    X::Matrix{Float64}
+    y::Vector{Float64}
+    kernel::Function
+    L::Matrix{Float64}
+    lengthscale::Float64
+    variance::Float64
+    # check the sizes on X and y
+    # check that size of L matches X
+    function GP(X::Matrix{Float64}, y::Vector{Float64}, L::Matrix{Float64},
+                kernel::Function, lengthscale::Float64, variance::Float64)
+        return new(X, y, kernel, L, lengthscale, variance)
+    end
+
+    function GP(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
+            lengthscale::Float64, variance::Float64)
+        K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
+        L = cholesky(K).L
+        return new(X, y, kernel, L, lengthscale, variance)
+    end
+end
+
 #function predict(gp::GP, x_new::VecOrMat{Float64})
 #    K_inv = gp.L' \ (gp.L \ gp.y)
 #    K21 = kernel_matrix_compute(x_new, gp.X, gp.kernel, gp.lengthscale, gp.variance)
