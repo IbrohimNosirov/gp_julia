@@ -9,6 +9,17 @@ using Test
 
 diff_fd(f, x=0.0; h=1e-6) = (f(x+h) - f(x-h))/(2h)
 
+sample_eval(f, X :: AbstractMatrix) = [f(x) for x in eachcol(X)]
+sample_eval2(f, X :: AbstractMatrix) = [f(x...) for x in eachcol(X)]
+
+function test_setup2d(f, n)
+    Zk = kronecker_quasirand(2,n)
+    y = sample_eval2(f, Zk)
+    Zk, y
+end
+
+test_setup2d(f) = test_setup2d(f,10)
+
 function kronecker_quasirand(d, N, start=0)
     φ = 1.0 + 1.0/d
     for k = 1:10
@@ -42,7 +53,7 @@ end
 
 abstract type KernelContext end
 # convenience function
-(ctx :: KernelContext)(args ... ) = kernel(ctx, args ... )
+(ctx :: KernelContext)(args ... ) = kernel_func(ctx, args ... )
 
 abstract type RBFKernelContext{d} <: KernelContext end
 
@@ -70,7 +81,7 @@ nhypers(:: KernelSE) = 1
 getθ!(θ, ctx :: KernelSE) = θ[1]=ctx.l
 updateθ!(ctx :: KernelSE{d}, θ) where {d} = ctx.l=θ[1]
 
-kernel(ctx :: RBFKernelContext, x :: AbstractVector, y :: AbstractVector) =
+kernel_func(ctx :: RBFKernelContext, x :: AbstractVector, y :: AbstractVector) =
 φ(ctx, dist(x,y)/ctx.l)
 
 # convenience function.
@@ -125,6 +136,25 @@ kernel_alloc(k_ctx :: KernelContext, X :: AbstractMatrix, z :: AbstractVector) =
 
 kernel_alloc(k_ctx :: KernelContext, X :: AbstractMatrix, Y :: AbstractMatrix) = 
     kernel!(zeros(size(X,2), size(Y,2)), k_ctx, X, Y)
+
+@testset "Compare kernel matrix constructors" begin
+    Zk = kronecker_quasirand(2,10)
+    k_ctx = KernelSE{2}(1.0)
+
+    # Comprehension-based eval
+    KXX1 = [k_ctx(x,y) for x in eachcol(Zk), y in eachcol(Zk)]
+    KXz1 = [k_ctx(x,Zk[:,1]) for x in eachcol(Zk)]
+
+    # Dispatch through call mechanism
+    KXX2 = kernel_alloc(k_ctx, Zk)
+    KXX3 = kernel_alloc(k_ctx, Zk, Zk)
+    KXz2 = kernel_alloc(k_ctx, Zk, Zk[:,1])
+
+    @test KXX1 ≈ KXX2
+    @test KXX1 ≈ KXX3
+    @test KXz1 ≈ KXX1[:,1]
+    @test KXz2 ≈ KXX1[:,1]
+end
 
 let 
     Zk = kronecker_quasirand(2, 10)
@@ -237,7 +267,7 @@ let
         l = 0.123
         k_ctx(l) = KernelSE{2}(l)
         # convenience function to be able to call struct as a function
-        k(l) = kernel(k_ctx(l), x, y)
+        k(l) = kernel_func(k_ctx(l), x, y)
         g(l) = kernel_gθ_alloc(k_ctx(l), x, y)[1]
         H(l) = kernel_Hθ_alloc(k_ctx(l), x, y)[1,1]
         @test g(l) ≈ diff_fd(k, l) rtol=1e-6
@@ -251,7 +281,7 @@ let
         l = 0.32
         k_ctx = KernelSE{2}(l)
         # convenience function to be able to call struct as a function
-        k(x) = kernel(k_ctx, x, y)
+        k(x) = kernel_func(k_ctx, x, y)
         g(x) = kernel_gx_alloc(k_ctx, x, y)
         H(x) = kernel_Hx_alloc(k_ctx, x, y)
         @test g(x)' * dx ≈ diff_fd(s->k(x + s*dx)) rtol=1e-6 
@@ -340,8 +370,44 @@ end
     @test Chol_2.U ≈ A_full.U
 end
 
-# TODO: Tridiagonalization. I don't have a solid reason to do this right now, so I'm going to
-    # move on for the time-being.
+#= TODO: Tridiagonalization. I don't have a solid reason to do this right now, so I'm going to
+ move on for the time-being.
+=#
+
+function eval_GP(KC :: Cholesky, ctx :: KernelContext, X :: AbstractMatrix,
+    c :: AbstractVector, z :: AbstractVector)
+    kXz = kernel_alloc(ctx, X, z)
+    μ = dot(kXz,c)
+    rXz = ldiv!(KC.L, kXz)
+    σ = sqrt(kernel_func(ctx, z, z) - rXz'*rXz)
+    μ, σ
+end
+
+let
+    # Set up sample points and test function
+    testf(x,y) = x^2 + y
+    Zk, y = test_setup2d(testf)
+    ctx = KernelSE{2}(1.0)
+
+    # Form kernel Cholesky and weights
+    KC = kernel_cholesky(ctx, Zk)
+    c = KC\y
+
+    # Evaluate true function and GP at a test point
+    z = [0.456; 0.436]
+    fz = testf(z...)
+    print(fz)
+    μz, σz = eval_GP(KC, ctx, Zk, c, z)
+
+    # Compare GP to true function
+    zscore = (fz-μz)/σz
+    println("""
+        True value:       $fz
+        Posterior mean:   $μz
+        Posterior stddev: $σz
+        z-score:          $zscore
+        """)
+end
 
 #=
 Julia docs
@@ -355,27 +421,45 @@ Julia docs
 # TODO: make dθ_kernel! I don't have a solid reason for this, but it's in the notes, so I'm
     # going to skip for the moment.
 
-struct GP
-    X::Matrix{Float64}
-    y::Vector{Float64}
-    kernel::Function
-    L::Matrix{Float64}
-    lengthscale::Float64
-    variance::Float64
-    # check the sizes on X and y
-    # check that size of L matches X
-    function GP(X::Matrix{Float64}, y::Vector{Float64}, L::Matrix{Float64},
-                kernel::Function, lengthscale::Float64, variance::Float64)
-        return new(X, y, kernel, L, lengthscale, variance)
-    end
-
-    function GP(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
-            lengthscale::Float64, variance::Float64)
-        K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
-        L = cholesky(K).L
-        return new(X, y, kernel, L, lengthscale, variance)
-    end
+struct GPPContext{T <: KernelContext}
+    ctx :: T
+    η :: Float64
+    Xstore  :: Matrix{Float64}
+    Kstore  :: Matrix{Float64}
+    cstore  :: Vector{Float64}
+    ystore  :: Vector{Float64}
+    scratch :: Matrix{Float64}
+    n :: Integer
 end
+
+getX(gp :: GPPContext) = view(gp.Xstore,:,1:gp.n)
+getc(gp :: GPPContext) = view(gp.cstore,1:gp.n)
+gety(gp :: GPPContext) = view(gp.ystore,1:gp.n)
+getK(gp :: GPPContext) = view(gp.Kstore,1:gp.n,1:gp.n)
+getKC(gp :: GPPContext) = Cholesky(UpperTriangular(getK(gp)))
+capacity(gp :: GPPContext) = length(gp.ystore)
+getXrest(gp :: GPPContext) = view(gp.Xstore,:,gp.n+1:capacity(gp))
+getyrest(gp :: GPPContext) = view(gp.ystore,gp.n+1:capacity(gp))
+getXrest(gp :: GPPContext, m) = view(gp.Xstore,:,gp.n+1:gp.n+m)
+getyrest(gp :: GPPContext, m) = view(gp.ystore,gp.n+1:gp.n+m)
+
+function GPPContext(ctx :: KernelContext, η :: Float64, capacity)
+    d = ndims(ctx)
+    Xstore  = zeros(d, capacity)
+    Kstore  = zeros(capacity, capacity)
+    cstore  = zeros(capacity)
+    ystore  = zeros(capacity)
+    scratch = zeros(capacity,max(d+1,3))
+    GPPContext(ctx, η, Xstore, Kstore, cstore, ystore, scratch, 0)
+end
+
+refactor!(gp :: GPPContext) = kernel_cholesky!(getK(gp), gp.ctx, getX(gp), gp.η)
+resolve!(gp :: GPPContext) = ldiv!(getKC(gp), copyto!(getc(gp), gety(gp)))
+
+#function add_points!(gp :: GPPContext, m)
+#    n = gp.n + m
+#    if gp.n
+#end
 
 #function predict(gp::GP, x_new::VecOrMat{Float64})
 #    K_inv = gp.L' \ (gp.L \ gp.y)
@@ -387,7 +471,7 @@ end
 #
 #    return mu, diag(sigma2)
 #end
-#
+
 #function kernel_matrix_compute(X1::VecOrMat{Float64}, X2::VecOrMat{Float64},
 #k::Function, lengthscale::Float64, variance::Float64)
 #    n1 = size(X1, 2)
@@ -401,7 +485,7 @@ end
 #
 #    return K
 #end
-#
+
 #function logEI(z::Float64)
 #    function DψNLG0(z)
 #        φz = normpdf(z)
@@ -426,7 +510,7 @@ end
 #    end
 #    DψNLG(z) = if z < 6.0 DψNLG0(z) else DψNLG2(z) end
 #end
-#
+
 #function get_Copt(gp :: GP)
 #end
 #
@@ -448,7 +532,7 @@ end
 #
 #function Hx_var(gp :: GP, x :: AbstractVector)
 #end
-#
+
 #function Hgx_αNLEI(gp :: GP, x :: AbstractVector, y_best :: Float64)
 #    Copt = getCopt(gp)
 #    μ, gμ, Hμ = mean(gp, x), gx_mean(gp, x), Hx_mean(gp, x)
@@ -468,7 +552,7 @@ end
 #
 #    α, dα, Hα
 #end
-#
+
 #@stable function optimize_EI(gp::GP, x_current :: AbstractVector, lo :: AbstractVector,
 #        hi :: AbstractVector) 
 #    y_best = minimum(gety(gp))
@@ -479,7 +563,7 @@ end
 #    dfc = TwiceDifferentiableConstraints(lo, hi)
 #    res = optimize(df, dfc, x0, IPNewton())
 #end
-#
+
 #@stable function acquire_next_point(gp::GP, lo :: AbstractVector, hi :: AbstractVector;
 #        nstarts = 10, verbose=true)
 #    y_next = Inf
@@ -496,7 +580,7 @@ end
 #        end
 #    return x_next, y_next
 #end
-#
+
 #function surrogate_model_update!(gp::GP, x::Vector{Float64}, y::Float64)
 #    X_new = [gp.X x]
 #    y_new = [gp.y; y]
@@ -525,7 +609,7 @@ end
 #    end
 #    return GP(X_new, y_new, L_new, gp.kernel, lengthscale_new, variance_new)
 #end
-#
+
 #function optimize_hyperparameters(X, y, kernel, lengthscale, variance; method=LBFGS())
 #    initial_params = [lengthscale, variance]
 #    lower_bounds = [1e-6, 1e-6]
@@ -543,7 +627,7 @@ end
 #    
 #    return opt_lengthscale, opt_variance
 #end
-#
+
 #function log_marginal_likelihood(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
 #        params::Vector{Float64})
 #    lengthscale = params[1]
@@ -555,7 +639,7 @@ end
 #    
 #    return -0.5 * dot(y, α) - sum(log.(diag(L))) - 0.5 * n * log(2π)
 #end
-#
+
 #function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int; n_init::Int=5)
 #    dimensions = size(bounds, 1)
 #    lengthscale = 0.5
