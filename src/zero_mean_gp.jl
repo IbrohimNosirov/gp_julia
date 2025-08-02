@@ -39,7 +39,8 @@ function kronecker_quasirand(d, N, start=0)
     Z
 end
 
-# David's notes: https://www.cs.cornell.edu/courses/cs6241/2025sp/lec/2025-03-11.html
+# David's notes:
+# https://www.cs.cornell.edu/courses/cs6241/2025sp/lec/2025-03-11.html
 @stable function dist2(x :: AbstractVector{T}, y :: AbstractVector{T}) where {T}
     s = zero(T)
     for k = 1:length(x)
@@ -49,7 +50,8 @@ end
     s
 end
 
-@stable dist(x :: AbstractVector{T}, y :: AbstractVector{T}) where {T} = sqrt(dist2(x,y))
+dist(x :: AbstractVector{T}, y :: AbstractVector{T}) where {T} =
+    sqrt(dist2(x,y))
 
 abstract type KernelContext end
 # convenience function
@@ -59,7 +61,7 @@ abstract type RBFKernelContext{d} <: KernelContext end
 
 ndims(::RBFKernelContext{d}) where {d} = d
 
-@stable function Dφ_SE(s :: Float64)
+function Dφ_SE(s :: Float64)
     φ = exp(-s^2/2)
     dφ_div = -φ
     dφ = dφ_div*s
@@ -82,7 +84,7 @@ getθ!(θ, ctx :: KernelSE) = θ[1]=ctx.l
 updateθ!(ctx :: KernelSE{d}, θ) where {d} = ctx.l=θ[1]
 
 kernel_func(ctx :: RBFKernelContext, x :: AbstractVector, y :: AbstractVector) =
-φ(ctx, dist(x,y)/ctx.l)
+    φ(ctx, dist(x,y)/ctx.l)
 
 # convenience function.
 function getθ(ctx :: KernelContext)
@@ -91,8 +93,8 @@ function getθ(ctx :: KernelContext)
     θ
 end
 
-function kernel!(KXX :: AbstractMatrix, k_ctx :: KernelContext, X :: AbstractMatrix,
-                 η :: Real = 0.0)
+function kernel!(KXX :: AbstractMatrix, k_ctx :: KernelContext,
+                 X :: AbstractMatrix, η :: Real = 0.0)
     for j = 1:size(X,2)
         xj = @view X[:,j]
         KXX[j,j] = k_ctx(xj, xj) + η
@@ -255,7 +257,7 @@ let
         @test dφ ≈ diff_fd(s->Dφ(s; kwargs ... )[1], s) rtol=1e-6
         @test Hφ ≈ diff_fd(s->Dφ(s; kwargs ... )[3], s) rtol=1e-6
     end
-    
+
     @testset "SE kernel derivative check" begin
         s = .123
         @testset "SE" fd_check_Dφ(Dφ_SE, s)
@@ -275,9 +277,7 @@ let
     end
 
     @testset "Kernel spatial derivatives" begin
-        x = [0.2; 0.4]
-        y = [0.3; 0.7]
-        dx =[0.3; 0.5] # "what is the rate of change of x in the direction of this vector?"
+        x, y, dx  = [0.2; 0.4], [0.3; 0.7], [0.3; 0.5]
         l = 0.32
         k_ctx = KernelSE{2}(l)
         # convenience function to be able to call struct as a function
@@ -291,14 +291,14 @@ end
 
 #=
 Extended Cholesky:
-Now that we have some data structures, we need a mechanism for making predictions, running the
-    optimization, and so forth.
-    Julia comes with a Cholesky function, (cholesky!). We'll need to compute, store, and
-        extend the kernel Cholesky data structure.
+Now that we have some data structures, we need a mechanism for making
+    predictions, running the optimization, and so forth.
+    Julia comes with a Cholesky function, (cholesky!). We'll need to compute,
+        store, and extend the kernel Cholesky data structure.
     There are two additional things to remember for extending
         ∙ by default in Julia, Cholesky is stored in the upper triangle.
-        ∙ BLAS symmetric rank-k update 'syrk' is an in-place call better optimized than
-            A22 .-= R12'*R12.
+        ∙ BLAS symmetric rank-k update 'syrk' is an in-place call better
+        optimized than A22 .-= R12'*R12.
         _____________
        |         |   |
        |    R    |R12|
@@ -309,14 +309,16 @@ Now that we have some data structures, we need a mechanism for making prediction
 
 kernel_cholesky(ctx :: KernelContext, X :: AbstractMatrix) =
     cholesky!(kernel_alloc(ctx, X))
-    
-kernel_cholesky!(KXX :: AbstractMatrix, ctx :: KernelContext, X :: AbstractMatrix) =
+
+kernel_cholesky!(KXX :: AbstractMatrix, ctx :: KernelContext,
+                 X :: AbstractMatrix) =
     cholesky!(kernel!(KXX, ctx, X))
 
 kernel_cholesky(ctx :: KernelContext, X :: AbstractMatrix, η :: Real) =
     cholesky!(kernel_alloc(ctx, X, η))
 
-kernel_cholesky!(KXX :: AbstractMatrix, ctx :: KernelContext, X :: AbstractMatrix, η :: Real)=
+kernel_cholesky!(KXX :: AbstractMatrix, ctx :: KernelContext,
+                 X :: AbstractMatrix, η :: Real) =
     cholesky!(kernel!(KXX, ctx, X, η))
 
 let
@@ -335,14 +337,15 @@ end
 
 function extend_cholesky!(storage_mtrx::AbstractMatrix, n, m)
     #=
-        storage_mtrx    a matrix with pre-Cholesky information, ready for in-place Cholesky.
+        storage_mtrx    a matrix with pre-Cholesky information, ready for
+                            in-place Cholesky.
         n::Integer      start of extension
         m::Integer      end of extension
     =#
     # Cholesky with space for extension
-    R           = @view storage_mtrx[1:m, 1:m]
+    R = @view storage_mtrx[1:m, 1:m]
     # current Cholesky
-    R11         = @view storage_mtrx[1:n, 1:n]
+    R11 = @view storage_mtrx[1:n, 1:n]
     # new rows with pre-Cholesky values
     A12 = @view storage_mtrx[1:n, n+1:m]
     A22 = @view storage_mtrx[n+1:m, n+1:m]
@@ -370,8 +373,9 @@ end
     @test Chol_2.U ≈ A_full.U
 end
 
-#= TODO: Tridiagonalization. I don't have a solid reason to do this right now, so I'm going to
- move on for the time-being.
+#= TODO: Tridiagonalization. I don't have a solid reason to do this right now,
+    #so I'm going to
+    move on for the time-being.
 =#
 
 function eval_GP(KC :: Cholesky, ctx :: KernelContext, X :: AbstractMatrix,
@@ -411,15 +415,16 @@ end
 
 #=
 Julia docs
-   Constructors: It is good practice to provide as few inner constructor methods as possible:
-   only those taking all arguments explicitly and enforcing essential error checking and
-   transformation. Additional convenience constructor methods, supplying default values or
-   auxiliary transformations, should be provided as outer constructors that call the inner
-   constructors to do the heavy lifting. This separation is typically quite natural.
+   Constructors: It is good practice to provide as few inner constructor methods
+   as possible: only those taking all arguments explicitly and enforcing
+   essential error checking and transformation. Additional convenience
+   constructor methods, supplying default values or auxiliary transformations,
+   should be provided as outer constructors that call the inner constructors to
+   do the heavy lifting. This separation is typically quite natural.
 =#
 
-# TODO: make dθ_kernel! I don't have a solid reason for this, but it's in the notes, so I'm
-    # going to skip for the moment.
+# TODO: make dθ_kernel! I don't have a solid reason for this, but it's in the
+    # notes, so I'm going to skip for the moment.
 
 struct GPPContext{T <: KernelContext}
     ctx :: T
@@ -456,10 +461,208 @@ end
 refactor!(gp :: GPPContext) = kernel_cholesky!(getK(gp), gp.ctx, getX(gp), gp.η)
 resolve!(gp :: GPPContext) = ldiv!(getKC(gp), copyto!(getc(gp), gety(gp)))
 
-#function add_points!(gp :: GPPContext, m)
-#    n = gp.n + m
-#    if gp.n
-#end
+function add_points!(gp :: GPPContext, m)
+    n = gp.n + m
+    if gp.n > capacity(gp)
+        error("proposed points exceed GP context capacity.")
+    end
+    
+    # Create new object (same storage)
+    gpnew = GPPContext(gp.ctx, gp.η, gp.Xstore, gp.Kstore,
+                       gp.cstore, gp.ystore, gp.scratch, n)
+
+    #Refactor (if start from 0) or extend Cholesky (if partly done)
+    if gp.n == 0
+        refactor!(gpnew)
+    else
+        X1, X2 = getX(gp), getXrest(gp, m)
+        R11 = getK(gp)
+        K12 = view(gp.Kstore, 1:gp.n, gp.n+1:n)
+        K22 = view(gp.Kstore, gp.n+1:n, gp.n+1:n)
+        kernel!(K12, gp.ctx, X1, X2)
+        kernel!(K22, gp.ctx, X2, gp.η)
+        ldiv!(UpperTriangular(R11)', K12)
+        BLAS.syrk!('U', 'T', -1.0, K12, 1.0, K22)
+        cholesky!(Symmetric(K22))
+    end
+    
+    # Update c
+    resolve!(gpnew)
+
+    gpnew
+end
+
+function add_points!(gp :: GPPContext, X :: AbstractMatrix, y :: AbstractVector)
+    m = length(y)
+    @assert size(X,2) == m "Inconsistent number of points and number of values."
+    copy!(getXrest(gp, m), X)
+    copy!(getyrest(gp, m), y)
+    add_points!(gp, m)
+end
+
+function add_point!(gp :: GPPContext, x :: AbstractVector, y :: Float64)
+    add_points!(gp, reshape(x, length(x), 1), [y])
+end
+
+function GPPContext(ctx :: KernelContext, η :: Float64,
+                    X :: Matrix{Float64}, y :: Vector{Float64})
+    d, n = size(X)
+    @assert d == ndims(ctx) "Mismatch in dimensions of X and kernel."
+    gp = GPPContext(ctx, η, n)
+    copy!(gp.Xstore, X)
+    copy!(gp.ystore, y)
+    add_points!(gp, n)
+end
+
+function remove_points!(gp :: GPPContext, m)
+    @assert m <= gp.n "Cannot remove $m > $(gp.n) points."
+    gpnew = GPPContext(gp.ctx, gp.η, gp.Xstore, gp.Kstore,
+                       gp.cstore, gp.ystore, gp.scratch, gp.n-m)
+   resolve!(gpnew)
+   gpnew
+end
+
+function mean(gp :: GPPContext, z :: AbstractVector)
+    ctx, X, c = gp.ctx, getX(gp), getc(gp)
+    d, n = size(X)
+    sz = 0.0
+    for j = 1:n
+        xj = @view X[:,j]
+        sz += c[j]*kernel_func(ctx, z, xj)
+    end
+    sz
+end
+
+function mean_gx!(gsz :: AbstractVector, gp :: GPPContext, z :: AbstractVector)
+    ctx, X, c = gp.ctx, getX(gp), getc(gp)
+    d, n = size(X)
+    for j = 1:n
+        xj = @view X[:,j]
+        kernel_gx!(gsz, ctx, z, xj, c[j])
+    end
+    gsz
+end
+
+function mean_gx(gp :: GPPContext, z :: AbstractVector)
+    d = ndims(gp.ctx)
+    mean_gx!(zeros(d), gp, z)
+end
+
+function mean_Hx!(Hsz :: AbstractMatrix, gp :: GPPContext, z :: AbstractVector)
+    ctx, X, c = gp.ctx, getX(gp), getc(gp)
+    d, n = size(X)
+    for j = 1:n
+        xj = @view X[:,j]
+        kernel_Hx!(Hsz, ctx, z, xj, c[j])
+    end
+    Hsz
+end
+
+function mean_Hx(gp :: GPPContext, z :: AbstractVector)
+    d = ndims(gp.ctx)
+    mean_Hx!(zeros(d,d), gp, z)
+end
+
+function var(gp :: GPPContext, z :: AbstractVector)
+    kXz = view(gp.scratch,1:gp.n,1)
+    kernel!(kXz, gp.ctx, getX(gp), z)
+    L = getKC(gp).L
+    v = ldiv!(L, kXz)
+    kernel_func(gp.ctx,z,z) - v'*v
+end
+
+function var_gx!(g :: AbstractVector, gp :: GPPContext, z :: AbstractVector)
+    X, KC, ctx = getX(gp), getKC(gp), gp.ctx
+    d, n = size(X)
+    kXz  = view(gp.scratch,1:n,1)
+    gkXz = view(gp.scratch,1:n,2:d+1)
+    gkXz[:] .= 0.0
+    for j = 1:n
+        xj = @view X[:,j]
+        kXz[j] = kernel_func(ctx, z, xj)
+        kernel_gx!(view(gkXz,j,:), ctx, z, xj)
+    end
+    w = ldiv!(KC,kXz)
+    mul!(g, gkXz', w, -2.0, 0.0)
+end
+
+function var_gx(gp :: GPPContext, z :: AbstractVector)
+    d = ndims(gp.ctx)
+    var_gx!(zeros(d), gp, z)
+end
+
+function var_Hx!(H :: AbstractMatrix, gp :: GPPContext, z :: AbstractVector)
+    X, KC, ctx = getX(gp), getKC(gp), gp.ctx
+    d, n = size(X)
+    kXz  = view(gp.scratch,1:n,1)
+    gkXz = view(gp.scratch,1:n,2:d+1)
+    gkXz[:] .= 0.0
+    for j = 1:n
+        xj = @view X[:,j]
+        kXz[j] = kernel_func(ctx, z, xj)
+        kernel_gx!(view(gkXz,j,:), ctx, z, xj)
+    end
+    w = ldiv!(KC,kXz)
+    invL_gkXz = ldiv!(KC.L, gkXz)
+    H[:] .= 0.0
+    for j = 1:n
+        xj = @view X[:,j]
+        kernel_Hx!(H, ctx, z, xj, w[j])
+    end
+    mul!(H, invL_gkXz', invL_gkXz, -2.0, -2.0)
+end
+
+function var_Hx(gp :: GPPContext, z :: AbstractVector)
+    d = ndims(gp.ctx)
+    var_Hx!(zeros(d,d), gp, z)
+end
+
+let
+    testf(x,y) = x^2+y
+    Zk, y = test_setup2d(testf)
+    ctx = KernelSE{2}(1.0)
+    gp = GPPContext(ctx, 0.0, Zk, y)
+
+    z = [0.456; 0.456]
+    fz = testf(z...)
+    μz, σz = mean(gp, z), sqrt(var(gp,z))
+    zscore = (fz-μz)/σz
+    println("""
+        True value:       $fz
+        Posterior mean:   $μz
+        Posterior stddev: $σz
+        z-score:          $zscore
+        """)
+end
+
+@testset "Update points and kernel in GPPContext" begin
+    testf(x,y) = x^2+y
+    Zk, y = test_setup2d(testf)
+    ctx = KernelSE{2}(1.0)
+    ctx2 = KernelSE{2}(0.8)
+
+    gp1 = GPPContext(ctx, 0.0, Zk, y)
+    gpt = GPPContext(ctx, 0.0, 10)
+    gpt = add_points!(gpt, Zk, y)
+    @test getc(gpt) ≈ getc(gp1)
+
+    gpt = remove_points!(gpt, 2)
+    gp3 = GPPContext(ctx, 0.0, Zk[:,1:end-2], y[1:end-2])
+    @test getc(gpt) ≈ getc(gp3)
+
+    gpt = add_points!(gpt, Zk[:,end-1:end], y[end-1:end])
+    @test getc(gpt) ≈ getc(gp1)
+end
+
+@testset "Predictive mean and variance derivatives" begin
+    Zk, y = test_setup2d((x,y) -> x^2 + cos(3*y))
+    z, dz = [0.47; 0.47], [0.132; 0.0253]
+    gp = GPPContext(KernelSE{2}(0.5), 1e-8, Zk, y)
+    @test mean_gx(gp,z)'*dz ≈ diff_fd(s->mean(gp,z+s*dz))    rtol=1e-6
+    @test mean_Hx(gp,z)*dz  ≈ diff_fd(s->mean_gx(gp,z+s*dz)) rtol=1e-6
+    @test var_gx(gp,z)'*dz  ≈ diff_fd(s->var(gp,z+s*dz))     rtol=1e-6
+    @test var_Hx(gp,z)*dz   ≈ diff_fd(s->var_gx(gp,z+s*dz))  rtol=1e-6
+end
 
 #function predict(gp::GP, x_new::VecOrMat{Float64})
 #    K_inv = gp.L' \ (gp.L \ gp.y)
