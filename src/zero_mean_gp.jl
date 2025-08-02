@@ -664,31 +664,6 @@ end
     @test var_Hx(gp,z)*dz   ≈ diff_fd(s->var_gx(gp,z+s*dz))  rtol=1e-6
 end
 
-#function predict(gp::GP, x_new::VecOrMat{Float64})
-#    K_inv = gp.L' \ (gp.L \ gp.y)
-#    K21 = kernel_matrix_compute(x_new, gp.X, gp.kernel, gp.lengthscale, gp.variance)
-#    K22 = kernel_matrix_compute(x_new, x_new, gp.kernel, gp.lengthscale, gp.variance)
-#    mu = K21 * K_inv
-#    v = gp.L \ K21'
-#    sigma2 = K22 - v' * v
-#
-#    return mu, diag(sigma2)
-#end
-
-#function kernel_matrix_compute(X1::VecOrMat{Float64}, X2::VecOrMat{Float64},
-#k::Function, lengthscale::Float64, variance::Float64)
-#    n1 = size(X1, 2)
-#    n2 = size(X2, 2)
-#    K = zeros(n1, n2)
-#    for i in 1:n1
-#        for j in 1:n2
-#            K[i, j] = k(X1[:, i], X2[:, j], lengthscale, variance)
-#        end
-#    end
-#
-#    return K
-#end
-
 #function logEI(z::Float64)
 #    function DψNLG0(z)
 #        φz = normpdf(z)
@@ -714,28 +689,6 @@ end
 #    DψNLG(z) = if z < 6.0 DψNLG0(z) else DψNLG2(z) end
 #end
 
-#function get_Copt(gp :: GP)
-#end
-#
-#function mean(gp :: GP, x :: AbstractVector)
-#
-#end
-#
-#function gx_mean(gp :: GP, x :: AbstractVector)
-#end
-#
-#function Hx_mean(gp :: GP, x :: AbstractVector)
-#end
-#
-#function var(gp :: GP, x :: AbstractVector)
-#end
-#
-#function gx_var(gp :: GP, x :: AbstractVector)
-#end
-#
-#function Hx_var(gp :: GP, x :: AbstractVector)
-#end
-
 #function Hgx_αNLEI(gp :: GP, x :: AbstractVector, y_best :: Float64)
 #    Copt = getCopt(gp)
 #    μ, gμ, Hμ = mean(gp, x), gx_mean(gp, x), Hx_mean(gp, x)
@@ -756,7 +709,7 @@ end
 #    α, dα, Hα
 #end
 
-#@stable function optimize_EI(gp::GP, x_current :: AbstractVector, lo :: AbstractVector,
+#function optimize_EI(gp::GP, x_current :: AbstractVector, lo :: AbstractVector,
 #        hi :: AbstractVector) 
 #    y_best = minimum(gety(gp))
 #    fun(x) = Hgx_αNLEI(gp, x, y_best)[1]
