@@ -7,7 +7,8 @@ using StatsFuns
 using DispatchDoctor: @stable
 using Test
 
-diff_fd(f, x=0.0; h=1e-6) = (f(x+h) - f(x-h))/(2h)
+#David: why does only x=0.0 work?
+diff_fd(f, x=0.0; h=1e-6) = (f(x+h) - f(x-h))/(2h) 
 
 sample_eval(f, X :: AbstractMatrix) = [f(x) for x in eachcol(X)]
 sample_eval2(f, X :: AbstractMatrix) = [f(x...) for x in eachcol(X)]
@@ -373,8 +374,8 @@ end
     @test Chol_2.U ≈ A_full.U
 end
 
-#= TODO: Tridiagonalization. I don't have a solid reason to do this right now,
-    #so I'm going to
+#= David: Tridiagonalization. I don't have a solid reason to do this right now,
+    so I'm going to
     move on for the time-being.
 =#
 
@@ -400,7 +401,6 @@ let
     # Evaluate true function and GP at a test point
     z = [0.456; 0.436]
     fz = testf(z...)
-    print(fz)
     μz, σz = eval_GP(KC, ctx, Zk, c, z)
 
     # Compare GP to true function
@@ -663,6 +663,31 @@ end
     @test var_gx(gp,z)'*dz  ≈ diff_fd(s->var(gp,z+s*dz))     rtol=1e-6
     @test var_Hx(gp,z)*dz   ≈ diff_fd(s->var_gx(gp,z+s*dz))  rtol=1e-6
 end
+
+@testset "Test gradients " begin
+    # David: is a second variational just a different direction vector?
+    A0, δA, ΔA, ΔδA = randn(10,10), rand(10,10), rand(10,10), rand(10,10)
+
+    δinv(A,δA) = -A\δA/A # ((A') \ (-A\δA)')' rdiv!(-A\δA,A) doesn't work? David
+    invAδA, invAΔA, invAΔδA = A0\δA, A0\ΔA, A0\ΔδA
+    ΔδinvA = (invAδA*invAΔA + invAΔA*invAδA - invAΔδA)/A0
+
+    @test δinv(A0,δA) ≈ diff_fd(s->inv(A0+s*δA)) rtol=1e-6
+    @test ΔδinvA ≈ diff_fd(s->δinv(A0+s*ΔA, δA+s*ΔδA)) rtol=1e-6
+
+    V = randn(10,10)
+    A = V*Diagonal(1.0.+rand(10))/V
+    δA, ΔA, ΔδA = randn(10,10), randn(10,10), randn(10,10)
+
+    δlogdet(A, δA) = tr(A\δA)
+    Δδlogdet(A, δA, ΔA, ΔδA) = tr(A\ΔδA)-tr((A\ΔA)*(A\δA))
+
+    @test δlogdet(A,δA) ≈ dot(inv(A'), δA)
+    @test δlogdet(A,δA) ≈ diff_fd(s->log(det(A+s*δA))) rtol=1e-6
+    @test Δδlogdet(A,δA,ΔA,ΔδA) ≈ diff_fd(s->δlogdet(A+s*ΔA,δA+s*ΔδA)) rtol=1e-6
+end
+
+
 
 #function logEI(z::Float64)
 #    function DψNLG0(z)
