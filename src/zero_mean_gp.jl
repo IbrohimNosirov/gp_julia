@@ -1,10 +1,7 @@
 using LinearAlgebra
-using Distributions
 using Random
-using Plots
 using Optim
 using StatsFuns
-using DispatchDoctor: @stable
 using Test
 
 #David: why does only x=0.0 work?
@@ -42,7 +39,7 @@ end
 
 # David's notes:
 # https://www.cs.cornell.edu/courses/cs6241/2025sp/lec/2025-03-11.html
-@stable function dist2(x :: AbstractVector{T}, y :: AbstractVector{T}) where {T}
+function dist2(x :: AbstractVector{T}, y :: AbstractVector{T}) where {T}
     s = zero(T)
     for k = 1:length(x)
         dk = x[k] - y[k]
@@ -423,18 +420,18 @@ Julia docs
    do the heavy lifting. This separation is typically quite natural.
 =#
 
-# TODO: make dθ_kernel! I don't have a solid reason for this, but it's in the
-    # notes, so I'm going to skip for the moment.
-
 struct GPPContext{T <: KernelContext}
     ctx :: T
     η :: Float64
     Xstore  :: Matrix{Float64}
     Kstore  :: Matrix{Float64}
+#    Hstore  :: Matrix{Float64}
+#    Bstore  :: Matrix{Float64}
     cstore  :: Vector{Float64}
     ystore  :: Vector{Float64}
     scratch :: Matrix{Float64}
-    n :: Integer
+    n :: Integer # number of samples.
+#    p :: Integer # number of basis elements.
 end
 
 getX(gp :: GPPContext) = view(gp.Xstore,:,1:gp.n)
@@ -442,6 +439,10 @@ getc(gp :: GPPContext) = view(gp.cstore,1:gp.n)
 gety(gp :: GPPContext) = view(gp.ystore,1:gp.n)
 getK(gp :: GPPContext) = view(gp.Kstore,1:gp.n,1:gp.n)
 getKC(gp :: GPPContext) = Cholesky(UpperTriangular(getK(gp)))
+#getH(gp :: GPPContext) = view(gp.Hstore,1:gp.n,1:gp.p)
+#getB(gp :: GPPContext) = view(gp.Bstore, 1:gp.p, 1:gp.p)
+#David: should this also be a view?
+#getA(gp :: GPPContext) = [getK(gp) getH(gp); getH(gp)' getB(gp)] 
 capacity(gp :: GPPContext) = length(gp.ystore)
 getXrest(gp :: GPPContext) = view(gp.Xstore,:,gp.n+1:capacity(gp))
 getyrest(gp :: GPPContext) = view(gp.ystore,gp.n+1:capacity(gp))
@@ -450,12 +451,14 @@ getyrest(gp :: GPPContext, m) = view(gp.ystore,gp.n+1:gp.n+m)
 
 function GPPContext(ctx :: KernelContext, η :: Float64, capacity)
     d = ndims(ctx)
+#    p = 2
     Xstore  = zeros(d, capacity)
     Kstore  = zeros(capacity, capacity)
     cstore  = zeros(capacity)
     ystore  = zeros(capacity)
     scratch = zeros(capacity,max(d+1,3))
     GPPContext(ctx, η, Xstore, Kstore, cstore, ystore, scratch, 0)
+#    GPPContext(ctx, η, Xstore, Kstore, cstore, ystore, scratch, 0, p)
 end
 
 refactor!(gp :: GPPContext) = kernel_cholesky!(getK(gp), gp.ctx, getX(gp), gp.η)
@@ -475,10 +478,12 @@ function add_points!(gp :: GPPContext, m)
     if gp.n == 0
         refactor!(gpnew)
     else
+        # pass in A matrix instead of K.
         X1, X2 = getX(gp), getXrest(gp, m)
         R11 = getK(gp)
         K12 = view(gp.Kstore, 1:gp.n, gp.n+1:n)
         K22 = view(gp.Kstore, gp.n+1:n, gp.n+1:n)
+        # TODO: extend H, B
         kernel!(K12, gp.ctx, X1, X2)
         kernel!(K22, gp.ctx, X2, gp.η)
         ldiv!(UpperTriangular(R11)', K12)
@@ -721,12 +726,12 @@ end
 
 function nll_gθ(gp :: GPPContext, invK :: AbstractMatrix)
     nθ = nhypers(gp.ctx)
-    nll_gθ!(zeros(nθ, gp, invK))
+    nll_gθ!(zeros(nθ), gp, invK)
 end
 
 function nll_gθz!(g::AbstractVector, gp :: GPPContext, invK :: AbstractMatrix)
-    ctx, X, c, s = gp.ctx, getX(gp), getc(gp), gp.η
-    nll_gθ!(gp, gp, invK)
+    ctx, c, s = gp.ctx, getc(gp), gp.η
+    nll_gθ!(g, gp, invK)
     g[nhypers(ctx)+1] = (tr(invK) - c'*c)*s/2
     g
 end
@@ -743,7 +748,13 @@ function whiten_matrix!(δK :: AbstractMatrix, KC :: Cholesky)
     δK
 end
 
-# TODO: not obvious why I'd need to whiten multiple matrices.
+function whiten_matrices!(δKs :: AbstractArray, KC :: Cholesky)
+    n, n, m = size(δKs)
+    for i = 1:m
+        whiten_matrix!(view(δKs,:,:,i), KC)
+    end
+    δKs
+end
 
 function mul_slices!(result, As, b)
     m, n, k = size(As)
@@ -754,18 +765,18 @@ function mul_slices!(result, As, b)
 end
 
 # pack all hyperparameter matrices in a set (lengthscale, noise-variance).
-function dθ_kernel!(δKs :: AbstractArray, ctx :: KernelContext,
+function kernel_dθ!(δKs :: AbstractArray, ctx :: KernelContext,
                     X :: AbstractMatrix)
     n, n, d = size(δKs)
     for j = 1:n
         xj = @view X[:,j]
         δKjj = @view δKs[j,j,:]
-        gθ_kernel!(δKjj, ctx, xj, xj)
+        kernel_gθ!(δKjj, ctx, xj, xj)
         for i = j+1:n
             xi = @view X[:,i]
             δKij = @view δKs[i,j,:]
             δKji = @view δKs[j,i,:]
-            gθ_kernel!(δKij, ctx, xi, xj)
+            kernel_gθ!(δKij, ctx, xi, xj)
             δKji[:] .= δKij
         end
     end
@@ -782,7 +793,7 @@ function nll_Hθ(gp :: GPPContext)
     invK = KC\I
     c_tilde = KC.L\y
     φ = nll(gp)
-    # z = log η
+    # z is log η
     nll_∂z = (tr(invK)-(c'*c))*s/2
     
     # Set up space for NLL, gradient, and Hessian (including wrt z)
@@ -801,7 +812,7 @@ function nll_Hθ(gp :: GPPContext)
             kernel_Hθ!(H, ctx, xi, xj, (invK[i,j]-ci*cj))
         end
     end
-    H[nθ+1,nθ+1] = ∂z_nll
+    H[nθ+1,nθ+1] = nll_∂z
 
     # Set up whitened matrices δK̃ and products δK*c and δK̃*c̃
     δKs = zeros(n, n, nθ+1)
@@ -809,7 +820,7 @@ function nll_Hθ(gp :: GPPContext)
     for j=1:n  δKs[j,j,nθ+1] = s  end
     δKtilde_s = whiten_matrices!(δKs, KC)
     δKtilde_c_tilde_s = mul_slices!(zeros(n,nθ+1), δKtilde_s, c_tilde)
-    δKtilde_r = reshape(δK̃s, n*n, nθ+1)
+    δKtilde_r = reshape(δKtilde_s, n*n, nθ+1)
 
     # Add Hessian contributions involving whitened matrices
     mul!(H, δKtilde_r', δKtilde_r, -0.5, 1.0)
@@ -820,7 +831,7 @@ function nll_Hθ(gp :: GPPContext)
         g[j] = tr(view(δKtilde_s,:,:,j))/2
     end
     mul!(g, δKtilde_c_tilde_s', c_tilde, -0.5, 1.0)
-    g[end] = ∂z_nll
+    g[end] = nll_∂z
 
     φ, g, H
 end
@@ -837,20 +848,30 @@ end
     @test g[2] ≈ diff_fd(z->gp_SE_nll(l,z), z) rtol=1e-6
 end
 
-#@testset "Test NLL Hessians" begin
-#    Zk, y = test_setup2d((x,y) -> x^2 + y)
-#    s, ℓ = 1e-3, 0.89
-#    z = log(s)
-#
-#    testf(ℓ,z) = Hθ_nll(GPPContext(KernelSE{2}(ℓ), exp(z), Zk, y))
-#    ϕref, gref, Href = testf(ℓ, z)
-#
-#    @test gref[1] ≈ diff_fd(ℓ->testf(ℓ,z)[1][1], ℓ) rtol=1e-6
-#    @test gref[2] ≈ diff_fd(z->testf(ℓ,z)[1][1], z) rtol=1e-6
-#    @test Href[1,1] ≈ diff_fd(ℓ->testf(ℓ,z)[2][1], ℓ) rtol=1e-6
-#    @test Href[1,2] ≈ diff_fd(ℓ->testf(ℓ,z)[2][2], ℓ) rtol=1e-6
-#    @test Href[2,2] ≈ diff_fd(z->testf(ℓ,z)[2][2], z) rtol=1e-6
-#    @test Href[1,2] ≈ Href[2,1]
+@testset "Test NLL Hessians" begin
+    Zk, y = test_setup2d((x,y) -> x^2 + y)
+    s, l = 1e-3, 0.89
+    z = log(s)
+
+    testf(l,z) = nll_Hθ(GPPContext(KernelSE{2}(l), exp(z), Zk, y))
+    ϕref, gref, Href = testf(l, z)
+
+    @test gref[1] ≈ diff_fd(l->testf(l,z)[1][1], l) rtol=1e-6
+    @test gref[2] ≈ diff_fd(z->testf(l,z)[1][1], z) rtol=1e-6
+    @test Href[1,1] ≈ diff_fd(l->testf(l,z)[2][1], l) rtol=1e-6
+    @test Href[1,2] ≈ diff_fd(l->testf(l,z)[2][2], l) rtol=1e-6
+    @test Href[2,2] ≈ diff_fd(z->testf(l,z)[2][2], z) rtol=1e-6
+    @test Href[1,2] ≈ Href[2,1]
+end
+
+#function nll_optimize(gp :: GPPContext, x0 :: AbstractVector,
+#                     lo :: AbstractVector, hi :: AbstractVector)
+#    fun(x) = nll_Hθ(gp)[1]
+#    fun_grad!(g, x) = copyto!(g, nll_Hθ(gp)[2])
+#    fun_hess!(H, x) = copyto!(H, nll_Hθ(gp)[3])
+#    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, x0)
+#    dfc = TwiceDifferentiableConstraints(lo, hi)
+#    res = optimize(df, dfc, x0, IPNewton())
 #end
 
 # ignoring the nll reduced version with scale factor ---too complicated.
@@ -876,21 +897,19 @@ function DψNLG2(z)
     ψz, dψz, Hψz
 end
 
-function logEI(z::Float64)
-    DψNLG(z) = if z < 6.0 DψNLG0(z) else DψNLG2(z) end
-end
+DψNLG(z) = if z < 6.0 DψNLG0(z) else DψNLG2(z) end
 
-function Hgx_αNLEI(gp :: GP, x :: AbstractVector, y_best :: Float64)
-    Copt = getCopt(gp)
+function Hgx_αNLEI(gp :: GPPContext, x :: AbstractVector, y_best :: Float64)
+    #Copt = getCopt(gp)
     μ, gμ, Hμ = mean(gp, x), mean_gx(gp, x), mean_Hx(gp, x)
-    v, gv, Hv = Copt*var(gp, x), Copt*var_gx(gp, x), Copt*var_Hx(gp, x)
+    v, gv, Hv = var(gp, x), var_gx(gp, x), var_Hx(gp, x)
 
     σ = sqrt(v)
     gμs, Hμs = gμ/σ, Hμ/σ
     gvs, Hvs = gv/(2v), Hv/v
     
     u = (μ - y_best)/σ
-    ψ, dψ, Hψ = logEI(u)
+    ψ, dψ, Hψ = DψNLG(u)
 
     α = -log(σ) + ψ
     dα = dψ*gμs - (1 + u*dψ)*gvs
@@ -902,132 +921,76 @@ function Hgx_αNLEI(gp :: GP, x :: AbstractVector, y_best :: Float64)
 end
 
 # Test
+@testset "Test DψNLG0" begin
+    z = 0.123
+    @test DψNLG0(z)[2] ≈ diff_fd(z->DψNLG0(z)[1], z) rtol=1e-6
+    @test DψNLG0(z)[3] ≈ diff_fd(z->DψNLG0(z)[2], z) rtol=1e-6    
+end
 
-#function optimize_EI(gp::GP, x_current :: AbstractVector, lo :: AbstractVector,
-#        hi :: AbstractVector) 
-#    y_best = minimum(gety(gp))
-#    fun(x) = Hgx_αNLEI(gp, x, y_best)[1]
-#    fun_g!(g, x) = copyto!(g, Hgx_αNLEI(gp, x, y_best)[2])
-#    fun_H!(g, x) = copyto!(g, Hgx_αNLEI(gp, x, y_best)[3])
-#    df = TwiceDifferentiable(fun, fun_g!, fun_H!, x0)
-#    dfc = TwiceDifferentiableConstraints(lo, hi)
-#    res = optimize(df, dfc, x0, IPNewton())
-#end
+@testset "Test DψNLG2" begin
+    z = 5.23
+    @test DψNLG0(z)[1] ≈ DψNLG2(z)[1]
+    @test DψNLG0(z)[2] ≈ DψNLG2(z)[2]
+    @test DψNLG0(z)[3] ≈ DψNLG2(z)[3]    
+end
 
-#@stable function acquire_next_point(gp::GP, lo :: AbstractVector, hi :: AbstractVector;
-#        nstarts = 10, verbose=true)
-#    y_next = Inf
-#    x_next = [0.0; 0.0]
-#    for j = 1:10
-#        z = lo + (hi-lo).*rand(length(lo))
-#        res = optimize_EI(gp, z, [0.0; 0.0], [1.0; 1.0])
-#        if verbose
-#            println("From $z: $(Optim.minimum(res)) at $(Optim.minimizer(res))")
-#        end
-#        if Optim.minimum(res) < bestα
-#            y_next = Optim.minimum(res)
-#            x_next[:] = Optim.minimizer(res)
-#        end
-#    return x_next, y_next
-#end
+@testset begin
+    function check_derivs3_NLEI(f)
+        Zk, y = test_setup2d((x,y)->x^2+y)
+        gp = GPPContext(KernelSE{2}(0.5), 1e-8, Zk, y)
+        z = [0.47; 0.47]
+        dz = randn(2)
+        fopt = -0.1
+        g(s)  = f(gp, z+s*dz, fopt)[1]
+        dg(s) = f(gp, z+s*dz, fopt)[2]
+        Hg(s) = f(gp, z+s*dz, fopt)[3]
+        @test dg(0)'*dz ≈ diff_fd(g) rtol=1e-6
+        @test Hg(0)*dz ≈ diff_fd(dg) rtol=1e-6
+    end
+    @testset "Test Hgx_αNLEI" check_derivs3_NLEI(Hgx_αNLEI)
+end
 
-#function surrogate_model_update!(gp::GP, x::Vector{Float64}, y::Float64)
-#    X_new = [gp.X x]
-#    y_new = [gp.y; y]
-#    n_points = size(X_new, 2)
-#    
-#    if n_points % 5 == 0
-#        lengthscale_new, variance_new = optimize_hyperparameters(X_new, y_new,
-#        gp.kernel, gp.lengthscale, gp.variance)
-#
-#        K = kernel_matrix_compute(X_new, X_new, gp.kernel, lengthscale_new, variance_new)
-#        L_new = cholesky(K + 1e-10*I(size(K,1))).L
-#        L_new = Matrix(L_new)
-#    else
-#        K12 = kernel_matrix_compute(gp.X, reshape(x, :, 1), gp.kernel, gp.lengthscale,
-#        gp.variance)
-#        K22 = kernel_matrix_compute(reshape(x, :, 1), reshape(x, :, 1), gp.kernel,
-#        gp.lengthscale, gp.variance)
-#        
-#        L12 = gp.L \ K12
-#        L22 = sqrt(K22 - L12' * L12) .+ 1e-6
-#        L_new = [gp.L zeros(Float64, size(gp.L, 1), 1); 
-#                    reshape(L12', 1, :) L22]
-#        
-#        lengthscale_new = gp.lengthscale
-#        variance_new = gp.variance
-#    end
-#    return GP(X_new, y_new, L_new, gp.kernel, lengthscale_new, variance_new)
-#end
+function optimize_EI(gp :: GPPContext, x0 :: AbstractVector,
+                     lo :: AbstractVector, hi :: AbstractVector)
+    fopt = minimum(gety(gp))
+    fun(x) = Hgx_αNLEI(gp, x, fopt)[1]
+    fun_grad!(g, x) = copyto!(g, Hgx_αNLEI(gp, x, fopt)[2])
+    fun_hess!(H, x) = copyto!(H, Hgx_αNLEI(gp, x, fopt)[3])
+    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, x0)
+    dfc = TwiceDifferentiableConstraints(lo, hi)
+    res = optimize(df, dfc, x0, IPNewton())
+end
 
-#function optimize_hyperparameters(X, y, kernel, lengthscale, variance; method=LBFGS())
-#    initial_params = [lengthscale, variance]
-#    lower_bounds = [1e-6, 1e-6]
-#    upper_bounds = [10.0, 10.0]
-#
-#    function objective(params)
-#        return -log_marginal_likelihood(X, y, kernel, params)
-#    end
-#
-#    result = Optim.optimize(objective, lower_bounds, upper_bounds, initial_params,
-#    Fminbox(method))
-#    opt_params = Optim.minimizer(result)
-#    opt_lengthscale = opt_params[1]
-#    opt_variance = opt_params[2]
-#    
-#    return opt_lengthscale, opt_variance
-#end
+function optimize_EI(gp :: GPPContext,
+                     lo :: AbstractVector, hi :: AbstractVector;
+                     nstarts = 10, verbose=true)
+    bestα = Inf
+    bestx = [0.0; 0.0]
+    for j = 1:10
+        z = lo + (hi-lo).*rand(length(lo))
+        res = optimize_EI(gp, z, [0.0; 0.0], [1.0; 1.0])
+        if verbose
+            println("From $z: $(Optim.minimum(res)) at $(Optim.minimizer(res))")
+        end
+        if Optim.minimum(res) < bestα
+            bestα = Optim.minimum(res)
+            bestx[:] = Optim.minimizer(res)
+        end
+    end
+    bestα, bestx
+end
 
-#function log_marginal_likelihood(X::Matrix{Float64}, y::Vector{Float64}, kernel::Function,
-#        params::Vector{Float64})
-#    lengthscale = params[1]
-#    variance = params[2]
-#    K = kernel_matrix_compute(X, X, kernel, lengthscale, variance)
-#    n = size(K, 1)
-#    L = cholesky(K + 1e-6*I(size(K,1))).L
-#    α = L' \ (L \ y)
-#    
-#    return -0.5 * dot(y, α) - sum(log.(diag(L))) - 0.5 * n * log(2π)
-#end
-
-#function BO_loop(f::Function, bounds::Matrix{Float64}, n_iterations::Int; n_init::Int=5)
-#    dimensions = size(bounds, 1)
-#    lengthscale = 0.5
-#    variance = 1.2
-#
-#    X_init = zeros(dimensions, n_init)
-#    for d in 1:dimensions
-#        X_init[d, :] = bounds[1, d] .+ (bounds[2, d] - bounds[1, d]) * rand(n_init)
-#    end
-#    y_init = [f(X_init[:, i]) for i in 1:n_init]
-#
-#    gp = GP(X_init, y_init, rbf_kernel, lengthscale, variance)
-#
-#    X_all = copy(X_init)
-#    y_all = copy(y_init)
-#    y_best = minimum(y_init)
-#    x_best = X_init[:, argmin(y_init)]
-#
-#    history = [(x_best, y_best)]
-#    x_current = x_best
-#
-#    for i in 1:n_iterations
-#        x_current, ei = acquire_next_point(gp, x_current, y_best)
-#        y_current = f(x_current)
-#        gp = surrogate_model_update!(gp, x_current, y_current)
-#        X_all = [X_all x_current]
-#        y_all = [y_all; y_current]
-#        if y_current < y_best
-#            y_best = y_current
-#            x_best = x_current
-#            push!(history, (x_best, y_best))
-#        end
-#
-#        println("Iteration $i: x = $x_current, f(x) = $y_current, Best = $y_best")
-#    end
-#    lengthscale_final = gp.lengthscale
-#    variance_final = gp.variance
-#    println("Final lengthscale $lengthscale_final, final variance $variance_final")
-#
-#    return x_best, y_best, history, gp
-#end
+let
+    testf(x,y) = x^2+y
+    Zk, y = test_setup2d(testf)
+    gp = GPPContext(KernelSE{2}(0.8), 1e-8, 20)
+    gp = add_points!(gp, Zk, y)
+    for k = 1:5
+        bestα, bestx = optimize_EI(gp, [0.0; 0.0], [1.0; 1.0], verbose=false)
+        y = testf(bestx...)
+        gp = add_point!(gp, bestx, y)
+        println("$k: EI=$(exp(-bestα)), f($bestx) = $y")
+    end
+    println("--- End loop ---")
+    println("Best found: $(minimum(gety(gp)))")
+end
