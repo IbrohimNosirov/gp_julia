@@ -179,7 +179,7 @@ function kernel_gθ!(g :: AbstractVector, ctx :: RBFKernelContext,
     l = ctx.l
     s = dist(x,y)/l
     _, _, dφ, _ = Dφ(ctx, s)
-    g[1] -= c * dφ * s / l
+    g[1] -= c * dφ * s / l # David: why g[1]? because there is only 1?
     g
 end
 
@@ -188,7 +188,7 @@ function kernel_Hθ!(H :: AbstractMatrix, ctx :: RBFKernelContext,
     l = ctx.l
     s = dist(x,y)/l
     _, _, dφ, Hφ = Dφ(ctx, s)
-    H[1,1] += c*(Hφ*s + 2*dφ)*s/l^2
+    H[1,1] += c*(Hφ*s + 2*dφ)*s/l^2 # David: why H[1,1]? because there is 1?
     H
 end
 
@@ -687,52 +687,221 @@ end
     @test Δδlogdet(A,δA,ΔA,ΔδA) ≈ diff_fd(s->δlogdet(A+s*ΔA,δA+s*ΔδA)) rtol=1e-6
 end
 
+# why is δ[logdet(A)] = δ[det(A)]/det(A)?
 
+function nll(KC :: Cholesky, c :: AbstractVector, y :: AbstractVector)
+    n = length(c)
+    φ = (dot(c,y) + n*log(2π))/2
+    for k = 1:n
+        φ += log(KC.U[k,k])
+    end
+    φ
+end
 
-#function logEI(z::Float64)
-#    function DψNLG0(z)
-#        φz = normpdf(z)
-#        Qz = normccdf(z)
-#        Gz = φz - z*Qz
-#        ψz = -log(Gz)
-#        dψz = Qz/Gz
-#        Hψz = (-φz*Gz + Qz^2)/Gz^2
-#        ψz, dψz, Hψz
-#    end
+# convenience function
+nll(gp :: GPPContext) = nll(getKC(gp), getc(gp), gety(gp))
+
+function nll_gθ!(g :: AbstractVector, gp :: GPPContext, invK :: AbstractMatrix)
+    # fast for loop. Once you choose a column, use it up completely.
+    # recall that there is only 1 hyperparameter, lengthscale.
+    ctx, X, c = gp.ctx, getX(gp), getc(gp)
+    d, n = size(X)
+    for j = 1:n
+        xj = @view X[:,j]
+        cj = c[j]
+        kernel_gθ!(g, ctx, xj, xj, (invK[j,j] - cj*cj)/2)
+        for i = j+1:n
+            xi = @view X[:,i]
+            ci = c[i]
+            kernel_gθ!(g, ctx, xi, xj, (invK[i,j] - ci*cj))
+        end
+    end
+    g
+end
+
+function nll_gθ(gp :: GPPContext, invK :: AbstractMatrix)
+    nθ = nhypers(gp.ctx)
+    nll_gθ!(zeros(nθ, gp, invK))
+end
+
+function nll_gθz!(g::AbstractVector, gp :: GPPContext, invK :: AbstractMatrix)
+    ctx, X, c, s = gp.ctx, getX(gp), getc(gp), gp.η
+    nll_gθ!(gp, gp, invK)
+    g[nhypers(ctx)+1] = (tr(invK) - c'*c)*s/2
+    g
+end
+
+function nll_gθz(gp :: GPPContext, invK)
+    nll_gθz!(zeros(nhypers(gp.ctx) + 1), gp, invK)
+end
+
+nll_gθz(gp :: GPPContext) = nll_gθz(gp, getKC(gp)\I)
+
+function whiten_matrix!(δK :: AbstractMatrix, KC :: Cholesky)
+    ldiv!(KC.L, δK)
+    rdiv!(δK, KC.U)
+    δK
+end
+
+# TODO: not obvious why I'd need to whiten multiple matrices.
+
+function mul_slices!(result, As, b)
+    m, n, k = size(As)
+    for j=1:k
+        mul!(view(result,:,j), view(As,:,:,j), b)
+    end
+    result
+end
+
+# pack all hyperparameter matrices in a set (lengthscale, noise-variance).
+function dθ_kernel!(δKs :: AbstractArray, ctx :: KernelContext,
+                    X :: AbstractMatrix)
+    n, n, d = size(δKs)
+    for j = 1:n
+        xj = @view X[:,j]
+        δKjj = @view δKs[j,j,:]
+        gθ_kernel!(δKjj, ctx, xj, xj)
+        for i = j+1:n
+            xi = @view X[:,i]
+            δKij = @view δKs[i,j,:]
+            δKji = @view δKs[j,i,:]
+            gθ_kernel!(δKij, ctx, xi, xj)
+            δKji[:] .= δKij
+        end
+    end
+    δKs
+end
+
+function nll_Hθ(gp :: GPPContext)
+    ctx, X, y, c, s = gp.ctx, getX(gp), gety(gp), getc(gp), gp.η
+    d, n = size(X)
+    nθ = nhypers(ctx)
+    
+    # Factorization and initial solves
+    KC = getKC(gp)
+    invK = KC\I
+    c_tilde = KC.L\y
+    φ = nll(gp)
+    # z = log η
+    nll_∂z = (tr(invK)-(c'*c))*s/2
+    
+    # Set up space for NLL, gradient, and Hessian (including wrt z)
+    g = zeros(nθ+1)
+    H = zeros(nθ+1,nθ+1)
+
+    # Add Hessian contribution from kernel second derivatives
+    d, n = size(X)
+    for j = 1:n
+        xj = @view X[:,j]
+        cj = c[j]
+        kernel_Hθ!(H, ctx, xj, xj, (invK[j,j]-cj*cj)/2)
+        for i = j+1:n
+            xi = @view X[:,i]
+            ci = c[i]
+            kernel_Hθ!(H, ctx, xi, xj, (invK[i,j]-ci*cj))
+        end
+    end
+    H[nθ+1,nθ+1] = ∂z_nll
+
+    # Set up whitened matrices δK̃ and products δK*c and δK̃*c̃
+    δKs = zeros(n, n, nθ+1)
+    kernel_dθ!(δKs, ctx, X)
+    for j=1:n  δKs[j,j,nθ+1] = s  end
+    δKtilde_s = whiten_matrices!(δKs, KC)
+    δKtilde_c_tilde_s = mul_slices!(zeros(n,nθ+1), δKtilde_s, c_tilde)
+    δKtilde_r = reshape(δK̃s, n*n, nθ+1)
+
+    # Add Hessian contributions involving whitened matrices
+    mul!(H, δKtilde_r', δKtilde_r, -0.5, 1.0)
+    mul!(H, δKtilde_c_tilde_s', δKtilde_c_tilde_s, 1.0, 1.0)
+
+    # And put together gradient
+    for j=1:nθ
+        g[j] = tr(view(δKtilde_s,:,:,j))/2
+    end
+    mul!(g, δKtilde_c_tilde_s', c_tilde, -0.5, 1.0)
+    g[end] = ∂z_nll
+
+    φ, g, H
+end
+
+@testset "Test NLL gradients" begin
+    Zk, y = test_setup2d((x,y) -> x^2 + y)
+    s, l = 1e-4, 1.0
+    z=log(s)
+
+    gp_SE_nll(l,z) = nll(GPPContext(KernelSE{2}(l), exp(z), Zk, y))
+    g = nll_gθz(GPPContext(KernelSE{2}(l), s, Zk, y))
+
+    @test g[1] ≈ diff_fd(l->gp_SE_nll(l,z), l) rtol=1e-6
+    @test g[2] ≈ diff_fd(z->gp_SE_nll(l,z), z) rtol=1e-6
+end
+
+#@testset "Test NLL Hessians" begin
+#    Zk, y = test_setup2d((x,y) -> x^2 + y)
+#    s, ℓ = 1e-3, 0.89
+#    z = log(s)
 #
-#    function DψNLG2(z)
-#        # Approximate W by 20th convergent
-#        W = 0.0
-#        for k = 20:-1:1
-#            W = k/(z + W)
-#        end
-#        ψz = log1p(z/W) + 0.5*(z^2 + log(2π))
-#        dψz = 1/W
-#        Hψz = (1 - W*(z + W))/W^2
-#        ψz, dψz, Hψz
-#    end
-#    DψNLG(z) = if z < 6.0 DψNLG0(z) else DψNLG2(z) end
+#    testf(ℓ,z) = Hθ_nll(GPPContext(KernelSE{2}(ℓ), exp(z), Zk, y))
+#    ϕref, gref, Href = testf(ℓ, z)
+#
+#    @test gref[1] ≈ diff_fd(ℓ->testf(ℓ,z)[1][1], ℓ) rtol=1e-6
+#    @test gref[2] ≈ diff_fd(z->testf(ℓ,z)[1][1], z) rtol=1e-6
+#    @test Href[1,1] ≈ diff_fd(ℓ->testf(ℓ,z)[2][1], ℓ) rtol=1e-6
+#    @test Href[1,2] ≈ diff_fd(ℓ->testf(ℓ,z)[2][2], ℓ) rtol=1e-6
+#    @test Href[2,2] ≈ diff_fd(z->testf(ℓ,z)[2][2], z) rtol=1e-6
+#    @test Href[1,2] ≈ Href[2,1]
 #end
 
-#function Hgx_αNLEI(gp :: GP, x :: AbstractVector, y_best :: Float64)
-#    Copt = getCopt(gp)
-#    μ, gμ, Hμ = mean(gp, x), gx_mean(gp, x), Hx_mean(gp, x)
-#    v, gv, Hv = Copt*var(gp, x), Copt*gx_var(gp, x), Cop*Hx_var(gp, x)
-#
-#    σ = sqrt(v)
-#    gμs, Hμs = gμ/σ, Hμ/σ
-#    gvs, Hvs = gv/(2v), Hv/v
-#    
-#    u = (μ - y_best)/σ
-#    ψ, dψ, Hψ = logEI(u)
-#
-#    α = -log(σ) + ψ
-#    dα = dψ*gμs - (1 + u*dψ)*gvs
-#    Hα = -0.5*(1.0 + u*dψ)*Hvs + dψ*Hμs + Hψ*gμs*gμs' + (2.0 + u^2*Hψ + 3.0*u*dψ)*gvs*gvs'
-#    -(u*Hψ + dψ)*(gμs*gvs' + gvs*gμs')
-#
-#    α, dα, Hα
-#end
+# ignoring the nll reduced version with scale factor ---too complicated.
+function DψNLG0(z)
+    φz = normpdf(z)
+    Qz = normccdf(z)
+    Gz = φz - z*Qz
+    ψz = -log(Gz)
+    dψz = Qz/Gz
+    Hψz = (-φz*Gz + Qz^2)/Gz^2
+    ψz, dψz, Hψz
+end
+
+function DψNLG2(z)
+    # Approximate W by 20th convergent
+    W = 0.0
+    for k = 20:-1:1
+        W = k/(z + W)
+    end
+    ψz = log1p(z/W) + 0.5*(z^2 + log(2π))
+    dψz = 1/W
+    Hψz = (1 - W*(z + W))/W^2
+    ψz, dψz, Hψz
+end
+
+function logEI(z::Float64)
+    DψNLG(z) = if z < 6.0 DψNLG0(z) else DψNLG2(z) end
+end
+
+function Hgx_αNLEI(gp :: GP, x :: AbstractVector, y_best :: Float64)
+    Copt = getCopt(gp)
+    μ, gμ, Hμ = mean(gp, x), mean_gx(gp, x), mean_Hx(gp, x)
+    v, gv, Hv = Copt*var(gp, x), Copt*var_gx(gp, x), Copt*var_Hx(gp, x)
+
+    σ = sqrt(v)
+    gμs, Hμs = gμ/σ, Hμ/σ
+    gvs, Hvs = gv/(2v), Hv/v
+    
+    u = (μ - y_best)/σ
+    ψ, dψ, Hψ = logEI(u)
+
+    α = -log(σ) + ψ
+    dα = dψ*gμs - (1 + u*dψ)*gvs
+    Hα = -0.5*(1.0 + u*dψ)*Hvs + dψ*Hμs + Hψ*gμs*gμs' +
+         (2.0 + u^2*Hψ + 3.0*u*dψ)*gvs*gvs' +
+         -(u*Hψ + dψ)*(gμs*gvs' + gvs*gμs')
+
+    α, dα, Hα
+end
+
+# Test
 
 #function optimize_EI(gp::GP, x_current :: AbstractVector, lo :: AbstractVector,
 #        hi :: AbstractVector) 
