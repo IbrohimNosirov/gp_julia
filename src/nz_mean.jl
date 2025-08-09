@@ -34,8 +34,7 @@ function Dφ_SE(s :: Float64)
     φ, dφ_div, dφ, Hφ
 end
 
-# Question for David: is there any drawback to using @stable for every function call?
-@stable function dist2(x :: AbstractVector{T}, y :: AbstractVector{T}) where {T}
+function dist2(x :: AbstractVector{T}, y :: AbstractVector{T}) where {T}
     s = zero(T)
     for k = 1:length(x)
         dk = x[k] - y[k]
