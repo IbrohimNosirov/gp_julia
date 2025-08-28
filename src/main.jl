@@ -57,8 +57,8 @@ function plot_bo_results(gp, X_all, x_best)
     return p
 end
 
-bounds = [[-5.0, 10.0] [0.0, 15.0]]
-x_best, f_best, history, gp = BO_loop(branin, bounds, 50, n_init=20)
-#p = plot_bo_results(gp, gp.X, x_best)
-#savefig(p, "zero_mean_gp.svg")
-#println("Plot saved as 'zero_mean_gp.svg'")
+lo = [-5.0, 10.0]
+hi = [0.0, 15.0]
+k_ctx = 
+gp_ctx = 
+EI_optimize(gp_context, lo, hi)

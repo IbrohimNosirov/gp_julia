@@ -3,7 +3,10 @@ using Random
 using Optim
 using StatsFuns
 
-#David: why does only x=0.0 work?
+# TODO:
+# 1. I would like to add conditionally positive definite kernels (spherical
+# harmonics), which have less hyperparameters that we need to tune.
+# 2. We would like to perform exact line search on this code.
 diff_fd(f, x=0.0; h=1e-6) = (f(x+h) - f(x-h))/(2h) 
 
 sample_eval(f, X :: AbstractMatrix) = [f(x) for x in eachcol(X)]
@@ -76,7 +79,7 @@ end
 Dφ(:: KernelSE, s) = Dφ_SE(s)
 nhypers(:: KernelSE) = 1
 getθ!(θ, ctx :: KernelSE) = θ[1]=ctx.l
-updateθ!(ctx :: KernelSE{d}, θ) where {d} = ctx.l=θ[1]
+updateθ(ctx :: KernelSE{d}, θ) where {d} = KernelSE{d}(θ[1])
 
 kernel_func(ctx :: RBFKernelContext, x :: AbstractVector, y :: AbstractVector) =
     φ(ctx, dist(x,y)/ctx.l)
@@ -397,13 +400,13 @@ function remove_points!(gp :: GPPContext, m)
    gpnew
 end
 
-f(θ) = nll_fθ(gp, θ)
-g(θ) = nll_gθ(gp, θ)
-H(θ) = nll_Hθ(gp, θ)
-# need to write a version of nll_Hθ that's dependent on θ.
+function change_kernel_nofactor!(gp :: GPPContext, ctx :: KernelContext, η :: Float64)
+    GPPContext(ctx, η, gp.Xstore, gp.Kstore,
+               gp.cstore, gp.ystore, gp.scratch, gp.n)
+end
 
 function change_kernel!(gp :: GPPContext, ctx :: KernelContext, η :: Float64)
-    gpnew = change_kernel_no_factor!(gp, ctx, η)
+    gpnew = change_kernel_nofactor!(gp, ctx, η)
     refactor!(gpnew)
     resolve!(gpnew)
     gpnew
@@ -672,6 +675,7 @@ function monitor(ctx, η, φ, gφ)
 #    push!(normgs, norm(gφ))
 end
 
+# TODO: this function performs the entirety of the hyperparameter update.
 function newton_hypers0(gp :: GPPContext;
                         niters = 12, max_dz=3.0,
                         monitor = (ctx, η, φ, gφ)->nothing)
@@ -685,7 +689,7 @@ function newton_hypers0(gp :: GPPContext;
             u *= max_dz/abs(u[2])
         end
         θ[:] .+= u[1:end-1]
-        ctx = updateθ!(ctx, θ)
+        ctx = updateθ(ctx, θ)
         η *= exp(u[end])
         gp = change_kernel!(gp, ctx, η)
     end
@@ -754,24 +758,32 @@ function EI_optimize(gp :: GPPContext, lo :: AbstractVector,
     hi :: AbstractVector; nstarts = 10, verbose=true)
     bestα = Inf
     bestx = [0.0; 0.0]
-    best_nll = Inf
-    bestθ = [0.0; 0.0]
     for j = 1:10
         z = lo + (hi-lo).*rand(length(lo))
-        res = EI_optimize(gp, z, [0.0; 0.0], [1.0; 1.0])
+        res_ei = EI_optimize(gp, z, [0.0; 0.0], [1.0; 1.0])
         if verbose
-            println("From $z: $(Optim.minimum(res)) at $(Optim.minimizer(res))")
+            println("From $z: $(Optim.minimum(res_ei)) at $(Optim.minimizer(res_ei))")
         end
 
-        if Optim.minimum(res) < bestα
-            bestα = Optim.minimum(res)
-            bestx[:] = Optim.minimizer(res)
-            gp = newton_hypers0(gp, monitor=monitor)
+        if Optim.minimum(res_ei) < bestα
+            bestα = Optim.minimum(res_ei)
+            bestx[:] = Optim.minimizer(res_ei)
         end
-#        if Optim.minimum(res1) < best_nll
-#            best_nll = Optim.minimum(res1)
-#            bestθ[:] = Optim.minimizer(res1)
-#        end
     end
     bestα, bestx
+end
+
+let
+    testf(x,y) = x^2+y
+    Zk, y = test_setup2d(testf)
+    gp = GPPContext(KernelSE{2}(0.8), 1e-8, 20)
+    gp = add_points!(gp, Zk, y)
+    for k = 1:5
+        bestα, bestx = EI_optimize(gp, [0.0; 0.0], [1.0; 1.0], verbose=false)
+        y = testf(bestx ... )
+        gp = add_point!(gp, bestx, y)
+        gp = newton_hypers0(gp, monitor=monitor)
+        println("$k: EI=$(exp(-bestα)), f($bestx) = $y")
+    end
+    println("Best found: $(minimum(gety(gp)))")
 end
