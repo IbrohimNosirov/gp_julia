@@ -6,7 +6,8 @@ using StatsFuns
 # TODO:
 # 1. I would like to add conditionally positive definite kernels (spherical
 # harmonics), which have less hyperparameters that we need to tune.
-# 2. We would like to perform exact line search on this code.
+# 2. We would like to perform exact line search for the hyperparameter tuning.
+
 diff_fd(f, x=0.0; h=1e-6) = (f(x+h) - f(x-h))/(2h) 
 
 sample_eval(f, X :: AbstractMatrix) = [f(x) for x in eachcol(X)]
@@ -269,6 +270,15 @@ function extend_cholesky!(storage_mtrx::AbstractMatrix, n, m)
     Cholesky(UpperTriangular(R))
 end
 
+# Extend bordered matrix.
+# TODO. need to construct matrix A here.
+function kernel_LU!(AXX :: AbstractMatrix, ctx :: KernelContext, X ::
+    AbstractMatrix, η :: Real)
+    AXX = [getK(gp) getH(gp)';
+           getH(gp) 0]
+    AXX = lu!(AXX)
+end
+
 #= David: Tridiagonalization. I don't have a solid reason to do this right now,
     so I'm going to
     move on for the time-being.
@@ -298,13 +308,13 @@ struct GPPContext{T <: KernelContext}
     η :: Float64
     Xstore  :: Matrix{Float64}
     Kstore  :: Matrix{Float64}
-#    Hstore  :: Matrix{Float64}
-#    Bstore  :: Matrix{Float64}
+    Astore  :: Matrix{Float64} # bordered linear system.
+    Hstore  :: Matrix{Float64}
     cstore  :: Vector{Float64}
     ystore  :: Vector{Float64}
     scratch :: Matrix{Float64}
     n :: Integer # number of samples.
-#    p :: Integer # number of basis elements.
+    p :: Integer # number of basis elements.
 end
 
 getX(gp :: GPPContext) = view(gp.Xstore,:,1:gp.n)
@@ -312,56 +322,64 @@ getc(gp :: GPPContext) = view(gp.cstore,1:gp.n)
 gety(gp :: GPPContext) = view(gp.ystore,1:gp.n)
 getK(gp :: GPPContext) = view(gp.Kstore,1:gp.n,1:gp.n)
 getKC(gp :: GPPContext) = Cholesky(UpperTriangular(getK(gp)))
-#getH(gp :: GPPContext) = view(gp.Hstore,1:gp.n,1:gp.p)
-#getB(gp :: GPPContext) = view(gp.Bstore, 1:gp.p, 1:gp.p)
 #David: should this also be a view?
-#getA(gp :: GPPContext) = [getK(gp) getH(gp); getH(gp)' getB(gp)] 
+getH(gp :: GPPContext) = view(gp.Hstore,1:p,1:gp.n)
+getA_LU(gp :: GPPContext) = view(gp.Astore,1:gp.n+gp.p,1:gp.n+gp.p)
+#getA_LU(gp :: GPPContext) = getA(gp)
 capacity(gp :: GPPContext) = length(gp.ystore)
 getXrest(gp :: GPPContext) = view(gp.Xstore,:,gp.n+1:capacity(gp))
 getyrest(gp :: GPPContext) = view(gp.ystore,gp.n+1:capacity(gp))
 getXrest(gp :: GPPContext, m) = view(gp.Xstore,:,gp.n+1:gp.n+m)
 getyrest(gp :: GPPContext, m) = view(gp.ystore,gp.n+1:gp.n+m)
 
-function GPPContext(ctx :: KernelContext, η :: Float64, capacity)
+function GPPContext(ctx :: KernelContext, p :: Integer, η :: Float64,
+                    capacity :: Integer)
     d = ndims(ctx)
-#    p = 2
     Xstore  = zeros(d, capacity)
     Kstore  = zeros(capacity, capacity)
+    Astore  = zeros(capacity+p, capacity+p)
     cstore  = zeros(capacity)
     ystore  = zeros(capacity)
     scratch = zeros(capacity,max(d+1,3))
-    GPPContext(ctx, η, Xstore, Kstore, cstore, ystore, scratch, 0)
-#    GPPContext(ctx, η, Xstore, Kstore, cstore, ystore, scratch, 0, p)
+#    GPPContext(ctx, η, Xstore, Kstore, cstore, ystore, scratch, 0)
+    GPPContext(ctx, η, Xstore, Kstore, Astore, cstore, ystore, scratch, 0, p)
 end
 
-refactor!(gp :: GPPContext) = kernel_cholesky!(getK(gp), gp.ctx, getX(gp), gp.η)
+refactor_K!(gp :: GPPContext) =
+    kernel_cholesky!(getK(gp), gp.ctx, getX(gp), gp.η)
+refactor_A!(gp :: GPPContext) =
+    kernel_LU!(getA(gp), gp.ctx, getX(gp), gp.η)
 resolve!(gp :: GPPContext) = ldiv!(getKC(gp), copyto!(getc(gp), gety(gp)))
 
-function add_points!(gp :: GPPContext, m)
+function add_points_KC!(gp :: GPPContext, m :: Integer)
+    n = gp.n + m
+    X1, X2 = getX(gp), getXrest(gp, m)
+    R11 = getK(gp)
+    K12 = view(gp.Kstore, 1:gp.n, gp.n+1:n)
+    K22 = view(gp.Kstore, gp.n+1:n, gp.n+1:n)
+    kernel!(K12, gp.ctx, X1, X2)
+    kernel!(K22, gp.ctx, X2, gp.η)
+    ldiv!(UpperTriangular(R11)', K12)
+    BLAS.syrk!('U', 'T', -1.0, K12, 1.0, K22)
+    cholesky!(Symmetric(K22))
+end
+
+function add_points!(gp :: GPPContext, m :: Integer)
     n = gp.n + m
     if gp.n > capacity(gp)
         error("proposed points exceed GP context capacity.")
     end
     
     # Create new object (same storage)
-    gpnew = GPPContext(gp.ctx, gp.η, gp.Xstore, gp.Kstore,
-                       gp.cstore, gp.ystore, gp.scratch, n)
+    gpnew = GPPContext(gp.ctx, gp.η, gp.Xstore, gp.Kstore, gp.Astore, 
+                       gp.cstore, gp.ystore, gp.scratch, n, gp.p)
 
     #Refactor (if start from 0) or extend Cholesky (if partly done)
     if gp.n == 0
-        refactor!(gpnew)
+        refactor_K!(gpnew)
     else
-        # pass in A matrix instead of K.
-        X1, X2 = getX(gp), getXrest(gp, m)
-        R11 = getK(gp)
-        K12 = view(gp.Kstore, 1:gp.n, gp.n+1:n)
-        K22 = view(gp.Kstore, gp.n+1:n, gp.n+1:n)
-        # TODO: extend H, B
-        kernel!(K12, gp.ctx, X1, X2)
-        kernel!(K22, gp.ctx, X2, gp.η)
-        ldiv!(UpperTriangular(R11)', K12)
-        BLAS.syrk!('U', 'T', -1.0, K12, 1.0, K22)
-        cholesky!(Symmetric(K22))
+        add_points_KC!(gp, m)
+        refactor_A!(gp)
     end
     
     # Update c
@@ -382,11 +400,11 @@ function add_point!(gp :: GPPContext, x :: AbstractVector, y :: Float64)
     add_points!(gp, reshape(x, length(x), 1), [y])
 end
 
-function GPPContext(ctx :: KernelContext, η :: Float64,
+function GPPContext(ctx :: KernelContext, p :: Integer, η :: Float64,
                     X :: Matrix{Float64}, y :: Vector{Float64})
     d, n = size(X)
     @assert d == ndims(ctx) "Mismatch in dimensions of X and kernel."
-    gp = GPPContext(ctx, η, n)
+    gp = GPPContext(ctx, p, η, n)
     copy!(gp.Xstore, X)
     copy!(gp.ystore, y)
     add_points!(gp, n)
@@ -394,20 +412,22 @@ end
 
 function remove_points!(gp :: GPPContext, m)
     @assert m <= gp.n "Cannot remove $m > $(gp.n) points."
-    gpnew = GPPContext(gp.ctx, gp.η, gp.Xstore, gp.Kstore,
-                       gp.cstore, gp.ystore, gp.scratch, gp.n-m)
+    gpnew = GPPContext(gp.ctx, gp.η, gp.Xstore, gp.Kstore, gp.Astore,
+                       gp.cstore, gp.ystore, gp.scratch, gp.n-m, gp.p)
    resolve!(gpnew)
    gpnew
 end
 
-function change_kernel_nofactor!(gp :: GPPContext, ctx :: KernelContext, η :: Float64)
-    GPPContext(ctx, η, gp.Xstore, gp.Kstore,
-               gp.cstore, gp.ystore, gp.scratch, gp.n)
+function change_kernel_nofactor!(gp :: GPPContext, ctx :: KernelContext,
+                                 η :: Float64)
+    GPPContext(ctx, η, gp.Xstore, gp.Kstore, gp.Astore,
+               gp.cstore, gp.ystore, gp.scratch, gp.n, gp.p)
 end
 
 function change_kernel!(gp :: GPPContext, ctx :: KernelContext, η :: Float64)
     gpnew = change_kernel_nofactor!(gp, ctx, η)
-    refactor!(gpnew)
+    refactor_K!(gpnew)
+    refactor_A!(gpnew)
     resolve!(gpnew)
     gpnew
 end
@@ -511,7 +531,8 @@ let
     testf(x,y) = x^2+y
     Zk, y = test_setup2d(testf)
     ctx = KernelSE{2}(1.0)
-    gp = GPPContext(ctx, 0.0, Zk, y)
+    p = 1
+    gp = GPPContext(ctx, p, 0.0, Zk, y)
 
     z = [0.456; 0.456]
     fz = testf(z...)
@@ -762,7 +783,8 @@ function EI_optimize(gp :: GPPContext, lo :: AbstractVector,
         z = lo + (hi-lo).*rand(length(lo))
         res_ei = EI_optimize(gp, z, [0.0; 0.0], [1.0; 1.0])
         if verbose
-            println("From $z: $(Optim.minimum(res_ei)) at $(Optim.minimizer(res_ei))")
+            println("From $z: $(Optim.minimum(res_ei)) at \
+            $(Optim.minimizer(res_ei))")
         end
 
         if Optim.minimum(res_ei) < bestα
@@ -776,12 +798,15 @@ end
 let
     testf(x,y) = x^2+y
     Zk, y = test_setup2d(testf)
-    gp = GPPContext(KernelSE{2}(0.8), 1e-8, 20)
+    p = 1
+    gp = GPPContext(KernelSE{2}(0.2), p, 1e-7, 20)
     gp = add_points!(gp, Zk, y)
+    println("updated A ", getA_LU(gp))
     for k = 1:5
         bestα, bestx = EI_optimize(gp, [0.0; 0.0], [1.0; 1.0], verbose=false)
         y = testf(bestx ... )
         gp = add_point!(gp, bestx, y)
+        println("updated A ", getA_LU(gp))
         gp = newton_hypers0(gp, monitor=monitor)
         println("$k: EI=$(exp(-bestα)), f($bestx) = $y")
     end
