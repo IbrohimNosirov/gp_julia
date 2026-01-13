@@ -92,6 +92,10 @@ function getθ(ctx :: KernelContext)
     θ
 end
 
+# TODO: implement spline interpolation here. This code should generate H.
+#   TODO: spend some time writing exactly how this might go.
+#   https://github.com/dnychka/fieldsRPackage/blob/main/fields/R/Tps.R
+
 function kernel!(KXX :: AbstractMatrix, k_ctx :: KernelContext,
                  X :: AbstractMatrix, η :: Real = 0.0)
     for j = 1:size(X,2)
@@ -271,12 +275,9 @@ function extend_cholesky!(storage_mtrx::AbstractMatrix, n, m)
 end
 
 # Extend bordered matrix.
-# TODO. need to construct matrix A here.
-function kernel_LU!(AXX :: AbstractMatrix, ctx :: KernelContext, X ::
+function kernel_lu!(AXX :: AbstractMatrix, ctx :: KernelContext, X ::
     AbstractMatrix, η :: Real)
-    AXX = [getK(gp) getH(gp)';
-           getH(gp) 0]
-    AXX = lu!(AXX)
+    lu!(AXX)
 end
 
 #= David: Tridiagonalization. I don't have a solid reason to do this right now,
@@ -305,16 +306,16 @@ Julia docs
 
 struct GPPContext{T <: KernelContext}
     ctx :: T
+    n :: Integer # number of samples.
+    p :: Integer # number of basis elements.
     η :: Float64
     Xstore  :: Matrix{Float64}
     Kstore  :: Matrix{Float64}
     Astore  :: Matrix{Float64} # bordered linear system.
     Hstore  :: Matrix{Float64}
+    scratch :: Matrix{Float64}
     cstore  :: Vector{Float64}
     ystore  :: Vector{Float64}
-    scratch :: Matrix{Float64}
-    n :: Integer # number of samples.
-    p :: Integer # number of basis elements.
 end
 
 getX(gp :: GPPContext) = view(gp.Xstore,:,1:gp.n)
@@ -322,10 +323,9 @@ getc(gp :: GPPContext) = view(gp.cstore,1:gp.n)
 gety(gp :: GPPContext) = view(gp.ystore,1:gp.n)
 getK(gp :: GPPContext) = view(gp.Kstore,1:gp.n,1:gp.n)
 getKC(gp :: GPPContext) = Cholesky(UpperTriangular(getK(gp)))
-#David: should this also be a view?
-getH(gp :: GPPContext) = view(gp.Hstore,1:p,1:gp.n)
-getA_LU(gp :: GPPContext) = view(gp.Astore,1:gp.n+gp.p,1:gp.n+gp.p)
-#getA_LU(gp :: GPPContext) = getA(gp)
+getH(gp :: GPPContext) = view(gp.Hstore,1:gp.n,1:gp.p) # tall skinny
+getA(gp :: GPPContext) = view(gp.Astore,1:gp.n+gp.p,1:gp.n+gp.p)
+#getA_LU(gp :: GPPContext) = LU(getA(gp))
 capacity(gp :: GPPContext) = length(gp.ystore)
 getXrest(gp :: GPPContext) = view(gp.Xstore,:,gp.n+1:capacity(gp))
 getyrest(gp :: GPPContext) = view(gp.ystore,gp.n+1:capacity(gp))
@@ -338,17 +338,22 @@ function GPPContext(ctx :: KernelContext, p :: Integer, η :: Float64,
     Xstore  = zeros(d, capacity)
     Kstore  = zeros(capacity, capacity)
     Astore  = zeros(capacity+p, capacity+p)
+    Hstore  = zeros(p, capacity)
+    scratch = zeros(capacity,max(d+1,3))
     cstore  = zeros(capacity)
     ystore  = zeros(capacity)
-    scratch = zeros(capacity,max(d+1,3))
 #    GPPContext(ctx, η, Xstore, Kstore, cstore, ystore, scratch, 0)
-    GPPContext(ctx, η, Xstore, Kstore, Astore, cstore, ystore, scratch, 0, p)
+    GPPContext(ctx, 0, p, η, 
+               Xstore, Kstore, Astore, Hstore, scratch,
+               cstore, ystore)
 end
 
 refactor_K!(gp :: GPPContext) =
     kernel_cholesky!(getK(gp), gp.ctx, getX(gp), gp.η)
-refactor_A!(gp :: GPPContext) =
-    kernel_LU!(getA(gp), gp.ctx, getX(gp), gp.η)
+
+# TODO
+refactor_A!(gp :: GPPContext) = lu!(getA(gp))
+
 resolve!(gp :: GPPContext) = ldiv!(getKC(gp), copyto!(getc(gp), gety(gp)))
 
 function add_points_KC!(gp :: GPPContext, m :: Integer)
@@ -371,13 +376,16 @@ function add_points!(gp :: GPPContext, m :: Integer)
     end
     
     # Create new object (same storage)
-    gpnew = GPPContext(gp.ctx, gp.η, gp.Xstore, gp.Kstore, gp.Astore, 
-                       gp.cstore, gp.ystore, gp.scratch, n, gp.p)
+    gpnew = GPPContext(gp.ctx, n, gp.p, gp.η, gp.Xstore, gp.Kstore, gp.Astore,
+                       gp.Hstore, gp.scratch, gp.cstore, gp.ystore)
 
     #Refactor (if start from 0) or extend Cholesky (if partly done)
+    display(stacktrace())
     if gp.n == 0
         refactor_K!(gpnew)
+        refactor_A!(gpnew)
     else
+        println("call this here")
         add_points_KC!(gp, m)
         refactor_A!(gp)
     end
@@ -696,7 +704,6 @@ function monitor(ctx, η, φ, gφ)
 #    push!(normgs, norm(gφ))
 end
 
-# TODO: this function performs the entirety of the hyperparameter update.
 function newton_hypers0(gp :: GPPContext;
                         niters = 12, max_dz=3.0,
                         monitor = (ctx, η, φ, gφ)->nothing)
@@ -775,8 +782,9 @@ function EI_optimize(gp :: GPPContext, x0 :: AbstractVector,
     res = optimize(df, dfc, x0, IPNewton())
 end
 
-function EI_optimize(gp :: GPPContext, lo :: AbstractVector,
-    hi :: AbstractVector; nstarts = 10, verbose=true)
+function EI_optimize(gp :: GPPContext,
+                     lo :: AbstractVector, hi :: AbstractVector;
+                     nstarts = 10, verbose=true)
     bestα = Inf
     bestx = [0.0; 0.0]
     for j = 1:10
@@ -798,17 +806,17 @@ end
 let
     testf(x,y) = x^2+y
     Zk, y = test_setup2d(testf)
-    p = 1
-    gp = GPPContext(KernelSE{2}(0.2), p, 1e-7, 20)
+    gp = GPPContext(KernelSE{2}(0.2), 1, 1e-7, 20)
     gp = add_points!(gp, Zk, y)
-    println("updated A ", getA_LU(gp))
-    for k = 1:5
-        bestα, bestx = EI_optimize(gp, [0.0; 0.0], [1.0; 1.0], verbose=false)
-        y = testf(bestx ... )
-        gp = add_point!(gp, bestx, y)
-        println("updated A ", getA_LU(gp))
-        gp = newton_hypers0(gp, monitor=monitor)
-        println("$k: EI=$(exp(-bestα)), f($bestx) = $y")
-    end
-    println("Best found: $(minimum(gety(gp)))")
+    println("updated A ")
+    display(getA(gp))
+#    for k = 1:5
+#        bestα, bestx = EI_optimize(gp, [0.0; 0.0], [1.0; 1.0], verbose=false)
+#        y = testf(bestx ... )
+#        gp = add_point!(gp, bestx, y)
+#        println("updated A ", getA_LU(gp))
+#        gp = newton_hypers0(gp, monitor=monitor)
+#        println("$k: EI=$(exp(-bestα)), f($bestx) = $y")
+#    end
+#    println("Best found: $(minimum(gety(gp)))")
 end
