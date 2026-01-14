@@ -7,6 +7,7 @@ using StatsFuns
 # 1. I would like to add conditionally positive definite kernels (spherical
 # harmonics), which have less hyperparameters that we need to tune.
 # 2. We would like to perform exact line search for the hyperparameter tuning.
+# 3. There is a way to implement this without StatsFun.
 
 diff_fd(f, x=0.0; h=1e-6) = (f(x+h) - f(x-h))/(2h) 
 
