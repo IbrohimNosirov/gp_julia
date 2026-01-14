@@ -1,4 +1,4 @@
-*
+*/**
 !src/zero_mean_gp.jl
 .DS_Store
 src/.DS_Store
